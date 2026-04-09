@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(netstat:*)",
+      "Bash(taskkill:*)",
+      "Bash(Stop-Process:*)",
+      "Bash(/taskkill:*)",
+      "Bash(wmic process:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(ping:*)",
+      "Bash(nslookup:*)",
+      "Bash(cargo run:*)",
+      "Bash(claude:*)"
+    ]
+  }
+}

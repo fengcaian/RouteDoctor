@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:v2.tauri.app)",
+      "Bash(node:*)",
+      "Bash(npm install:*)",
+      "Bash(rustc:*)",
+      "Bash(cargo check:*)",
+      "Bash(rm:*)",
+      "Bash(rustup update:*)",
+      "Bash(find:*)",
+      "Bash(npm run:*)",
+      "Bash(taskkill:*)",
+      "Bash(handle:*)",
+      "Bash(tasklist:*)",
+      "Bash(CARGO_BUILD_JOBS=1 cargo build:*)",
+      "Bash(cargo clean:*)",
+      "Bash(powershell:*)",
+      "Bash(mv target:*)",
+      "Bash(wmic logicaldisk:*)",
+      "Bash(systeminfo:*)",
+      "Bash(CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 RUSTFLAGS=\"-C codegen-units=1\" cargo build:*)",
+      "Bash(rustup target:*)",
+      "Bash(cargo build:*)",
+      "Bash(npx tauri:*)",
+      "Bash(convert:*)",
+      "Bash(python:*)",
+      "Bash(vite build:*)",
+      "Bash(npx vite:*)",
+      "Bash(cargo doc:*)",
+      "Bash(netstat:*)",
+      "Bash(tracert:*)",
+      "Bash(npx vue-tsc:*)",
+      "Bash(findstr :1420)",
+      "Bash(xargs -r taskkill /F /PID)",
+      "Bash(kill 30376:*)"
+    ]
+  }
+}

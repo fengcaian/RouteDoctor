@@ -1,0 +1,14 @@
+wing: pingplotter_next
+rooms:
+- name: public
+  description: Files from public/
+- name: src
+  description: Files from src/
+- name: src_tauri
+  description: Files from src-tauri/
+- name: design
+  description: Files from assets/
+- name: frontend
+  description: Files from components/
+- name: general
+  description: Files that don't fit other rooms
