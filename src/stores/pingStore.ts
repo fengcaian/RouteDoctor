@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import type { PingResult, PingStatistics, TargetConfig } from '@/types'
 
 export const usePingStore = defineStore('ping', () => {

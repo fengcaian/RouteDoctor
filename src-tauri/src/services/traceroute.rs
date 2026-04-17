@@ -1,14 +1,11 @@
 use std::net::IpAddr;
-use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc::{self, Sender, Receiver};
 use tokio::sync::RwLock;
 use crate::models::trace::{TracerouteResult, HopResult, TracerouteConfig, ProbeMethod};
 use crate::services::dns::{resolve, reverse_lookup};
 use crate::error::{AppError, AppResult};
 use tauri::Emitter;
-use socket2::{Socket, Protocol, Type, Domain};
 use serde_json::json;
 
 /// Session info for tracking
@@ -51,7 +48,7 @@ pub async fn run_traceroute(
 
     // Create initial result
     let start_time = chrono::Utc::now().timestamp_millis();
-    let mut result = TracerouteResult {
+    let result = TracerouteResult {
         target: target.clone(),
         target_ip: target_ip.to_string(),
         hops: Vec::new(),
@@ -184,34 +181,36 @@ async fn run_icmp_traceroute(
     let mut cmd = tokio::process::Command::new(command);
     cmd.args(&args);
     cmd.kill_on_drop(true);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
 
     #[cfg(windows)]
     {
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
-    let output = cmd.output().await;
+    match cmd.spawn() {
+        Ok(mut child) => {
+            // Read stdout line by line in real-time
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let stdout = child.stdout.take().expect("stdout not available");
+            let mut lines = BufReader::new(stdout).lines();
 
-    match output {
-        Ok(output) => {
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                log::error!("Traceroute stderr: {}", stderr);
-            }
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let lines: Vec<&str> = stdout.lines().collect();
-
-            for line in lines {
+            while let Ok(Some(line)) = lines.next_line().await {
+                // Check for stop signal
                 if stop_rx.try_recv() != Err(mpsc::error::TryRecvError::Empty) {
+                    child.kill().await.ok();
                     break;
                 }
 
-                if let Some(hop) = parse_traceroute_line(line) {
+                if let Some(hop) = parse_traceroute_line(&line) {
                     process_hop(&app_handle, &config.target, hop, &mut result).await;
                 }
             }
 
+            // Wait for child to complete
+            let _ = child.wait().await;
             result.completed = true;
         }
         Err(e) => {
@@ -224,70 +223,19 @@ async fn run_icmp_traceroute(
     finalize_result(&app_handle, result, &config.target, session_id).await;
 }
 
-/// UDP traceroute - implemented in Rust
+/// UDP traceroute - uses system tracert command on Windows
 async fn run_udp_traceroute(
     app_handle: tauri::AppHandle,
     config: TracerouteConfig,
     target_ip: IpAddr,
-    mut stop_rx: Receiver<()>,
+    stop_rx: Receiver<()>,
 ) {
-    let start_time = chrono::Utc::now().timestamp_millis();
-    let probe_method = ProbeMethod::Udp;
-
-    // Create session in database
-    let session_id = crate::storage::database::create_ping_session(
-        &app_handle,
-        &config.target,
-        "traceroute",
-    ).await.unwrap_or(0);
-
-    log::info!("UDP traceroute to {} (max hops: {})", config.target, config.max_hops);
-
-    let mut result = TracerouteResult {
-        target: config.target.clone(),
-        target_ip: target_ip.to_string(),
-        hops: Vec::new(),
-        completed: false,
-        start_time,
-        end_time: None,
-        probe_method,
-    };
-
-    // UDP traceroute implementation
-    let timeout = Duration::from_millis(config.timeout_ms as u64);
-    let probes_per_hop = config.probes_per_hop;
-
-    for ttl in 1..=config.max_hops {
-        // Check for stop signal
-        if stop_rx.try_recv() != Err(mpsc::error::TryRecvError::Empty) {
-            log::info!("UDP traceroute stopped at hop {}", ttl);
-            break;
-        }
-
-        let hop_result = probe_hop_udp(&target_ip, ttl, timeout, probes_per_hop).await;
-
-        // Check if we reached the target
-        let reached_target = hop_result.ip.as_ref()
-            .map(|ip| ip == &target_ip.to_string())
-            .unwrap_or(false);
-
-        process_hop(&app_handle, &config.target, hop_result.clone(), &mut result).await;
-
-        if reached_target {
-            log::info!("UDP traceroute reached target at hop {}", ttl);
-            result.completed = true;
-            break;
-        }
-    }
-
-    if result.hops.len() == config.max_hops as usize {
-        result.completed = true;
-    }
-
-    finalize_result(&app_handle, result, &config.target, session_id).await;
+    // On Windows, use system tracert command which uses ICMP and works reliably
+    // UDP traceroute with raw sockets requires admin privileges
+    run_icmp_traceroute(app_handle, config, target_ip, stop_rx).await
 }
 
-/// TCP traceroute - implemented in Rust
+/// TCP traceroute - uses tracetcp command on Windows
 async fn run_tcp_traceroute(
     app_handle: tauri::AppHandle,
     config: TracerouteConfig,
@@ -304,7 +252,32 @@ async fn run_tcp_traceroute(
         "traceroute",
     ).await.unwrap_or(0);
 
-    log::info!("TCP traceroute to {} (max hops: {})", config.target, config.max_hops);
+    // Use tracetcp command on Windows for TCP traceroute
+    let (command, args) = if cfg!(windows) {
+        let (target_host, target_port) = parse_target_with_port(&config.target);
+        let target_with_port = format!("{}:{}", target_host, target_port);
+
+        let mut args = vec![
+            target_with_port,
+            "-m".to_string(), config.max_hops.to_string(),
+            "-t".to_string(), config.timeout_ms.to_string(),
+            "-n".to_string(),
+            "-p".to_string(), "3".to_string(),
+        ];
+
+        ("tracetcp", args)
+    } else {
+        let base_args = vec![
+            "-I".to_string(),
+            "-n".to_string(),
+            "-m".to_string(), config.max_hops.to_string(),
+            "-w".to_string(), format!("{}", config.timeout_ms / 1000),
+            config.target.clone(),
+        ];
+        ("traceroute", base_args)
+    };
+
+    log::info!("TCP traceroute to {} with args: {:?}", config.target, args);
 
     let mut result = TracerouteResult {
         target: config.target.clone(),
@@ -316,229 +289,62 @@ async fn run_tcp_traceroute(
         probe_method,
     };
 
-    // TCP traceroute - uses TCP SYN packets
-    // Default port for TCP traceroute
-    let target_port: u16 = 80;
-    let timeout = Duration::from_millis(config.timeout_ms as u64);
-    let probes_per_hop = config.probes_per_hop;
+    let mut cmd = tokio::process::Command::new(command);
+    cmd.args(&args);
+    cmd.kill_on_drop(true);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
 
-    for ttl in 1..=config.max_hops {
-        // Check for stop signal
-        if stop_rx.try_recv() != Err(mpsc::error::TryRecvError::Empty) {
-            log::info!("TCP traceroute stopped at hop {}", ttl);
-            break;
-        }
-
-        let hop_result = probe_hop_tcp(&target_ip, target_port, ttl, timeout, probes_per_hop).await;
-
-        // Check if we reached the target (got SYN-ACK or connection established)
-        let reached_target = hop_result.ip.as_ref()
-            .map(|ip| ip == &target_ip.to_string())
-            .unwrap_or(false);
-
-        process_hop(&app_handle, &config.target, hop_result.clone(), &mut result).await;
-
-        if reached_target {
-            log::info!("TCP traceroute reached target at hop {}", ttl);
-            result.completed = true;
-            break;
-        }
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000);
     }
 
-    if result.hops.len() == config.max_hops as usize {
-        result.completed = true;
+    match cmd.spawn() {
+        Ok(mut child) => {
+            // Read stdout line by line in real-time
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let stdout = child.stdout.take().expect("stdout not available");
+            let mut lines = BufReader::new(stdout).lines();
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                // Check for stop signal
+                if stop_rx.try_recv() != Err(mpsc::error::TryRecvError::Empty) {
+                    child.kill().await.ok();
+                    break;
+                }
+
+                if let Some(hop) = parse_tracetcp_line(&line) {
+                    process_hop(&app_handle, &config.target, hop, &mut result).await;
+                }
+            }
+
+            // Wait for child to complete
+            let _ = child.wait().await;
+            result.completed = true;
+        }
+        Err(e) => {
+            log::error!("TCP traceroute failed: {}", e);
+            result.completed = false;
+            let _ = app_handle.emit("trace-error", &format!("TCP Traceroute failed: {}", e));
+        }
     }
 
     finalize_result(&app_handle, result, &config.target, session_id).await;
 }
 
-/// Probe a hop using UDP
-async fn probe_hop_udp(target_ip: &IpAddr, ttl: u32, timeout: Duration, probes: u32) -> HopResult {
-    let mut latencies: Vec<Option<f64>> = Vec::new();
-    let mut last_ip: Option<String> = None;
-
-    let domain = match target_ip {
-        IpAddr::V4(_) => Domain::IPV4,
-        IpAddr::V6(_) => Domain::IPV6,
-    };
-
-    // Use a high port that's likely to be unused
-    let target_port: u16 = 33434 + ttl as u16; // Standard traceroute port range
-
-    for _ in 0..probes {
-        let probe_result = send_udp_probe(target_ip, target_port, ttl, domain, timeout).await;
-
-        match probe_result {
-            Ok((ip, latency_ms)) => {
-                latencies.push(Some(latency_ms));
-                if ip.is_some() {
-                    last_ip = ip;
-                }
-            }
-            Err(_) => {
-                latencies.push(None);
-            }
+/// Parse target with port (e.g., "google.com:443" -> ("google.com", 443))
+fn parse_target_with_port(target: &str) -> (String, u16) {
+    if let Some(colon_pos) = target.rfind(':') {
+        // Check if the part after colon is a port number (not IPv6)
+        let after_colon = &target[colon_pos + 1..];
+        if let Ok(port) = after_colon.parse::<u16>() {
+            return (target[..colon_pos].to_string(), port);
         }
     }
-
-    let avg_latency = calculate_avg_latency(&latencies);
-    let packet_loss = calculate_packet_loss(&latencies);
-
-    HopResult {
-        hop_number: ttl,
-        ip: last_ip,
-        hostname: None,
-        latencies,
-        avg_latency,
-        packet_loss,
-    }
-}
-
-/// Probe a hop using TCP SYN
-async fn probe_hop_tcp(target_ip: &IpAddr, port: u16, ttl: u32, timeout: Duration, probes: u32) -> HopResult {
-    let mut latencies: Vec<Option<f64>> = Vec::new();
-    let mut last_ip: Option<String> = None;
-
-    for _ in 0..probes {
-        let probe_result = send_tcp_probe(target_ip, port, ttl, timeout).await;
-
-        match probe_result {
-            Ok((ip, latency_ms)) => {
-                latencies.push(Some(latency_ms));
-                if ip.is_some() {
-                    last_ip = ip;
-                }
-            }
-            Err(_) => {
-                latencies.push(None);
-            }
-        }
-    }
-
-    let avg_latency = calculate_avg_latency(&latencies);
-    let packet_loss = calculate_packet_loss(&latencies);
-
-    HopResult {
-        hop_number: ttl,
-        ip: last_ip,
-        hostname: None,
-        latencies,
-        avg_latency,
-        packet_loss,
-    }
-}
-
-/// Send UDP probe and wait for response
-async fn send_udp_probe(
-    target_ip: &IpAddr,
-    port: u16,
-    ttl: u32,
-    domain: Domain,
-    timeout: Duration,
-) -> Result<(Option<String>, f64), Box<dyn std::error::Error + Send + Sync>> {
-    use tokio::time::Instant;
-
-    let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.set_ttl(ttl)?;
-    socket.set_nonblocking(true)?;
-
-    let target_addr = SocketAddr::new(*target_ip, port);
-
-    // Convert to tokio socket
-    let std_socket = std::net::UdpSocket::from(socket);
-    let udp_socket = tokio::net::UdpSocket::from_std(std_socket)?;
-
-    let start = Instant::now();
-
-    // Send empty UDP packet
-    udp_socket.send_to(&[0], target_addr).await?;
-
-    // Wait for response (ICMP Time Exceeded or Port Unreachable)
-    let mut buf = [0u8; 512];
-
-    let result = tokio::time::timeout(timeout, udp_socket.recv_from(&mut buf)).await;
-
-    match result {
-        Ok(Ok((_, src_addr))) => {
-            let latency_ms = start.elapsed().as_millis() as f64;
-            Ok((Some(src_addr.ip().to_string()), latency_ms))
-        }
-        Ok(Err(e)) => {
-            log::debug!("UDP probe recv error: {}", e);
-            Err(e.into())
-        }
-        Err(_) => {
-            // Timeout - no response
-            Err("timeout".into())
-        }
-    }
-}
-
-/// Send TCP SYN probe and wait for response
-async fn send_tcp_probe(
-    target_ip: &IpAddr,
-    port: u16,
-    ttl: u32,
-    _timeout: Duration,
-) -> Result<(Option<String>, f64), Box<dyn std::error::Error + Send + Sync>> {
-    // Create TCP socket with TTL set
-    let domain = match target_ip {
-        IpAddr::V4(_) => Domain::IPV4,
-        IpAddr::V6(_) => Domain::IPV6,
-    };
-
-    let target_addr = SocketAddr::new(*target_ip, port);
-    let target_ip_str = target_ip.to_string();
-
-    // Run blocking socket operations in a blocking task
-    let result: Result<Result<(Option<String>, f64), Box<dyn std::error::Error + Send + Sync>>, tokio::task::JoinError> =
-        tokio::task::spawn_blocking(move || {
-            let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
-            socket.set_ttl(ttl)?;
-            socket.set_nonblocking(true)?;
-
-            let start = std::time::Instant::now();
-
-            // Attempt to connect
-            match socket.connect(&target_addr.into()) {
-                Ok(_) => {
-                    let latency_ms = start.elapsed().as_millis() as f64;
-                    // Get peer address
-                    let peer_addr: Option<String> = socket.peer_addr()
-                        .ok()
-                        .and_then(|a| a.as_socket().map(|s| s.ip().to_string()));
-                    Ok((peer_addr, latency_ms))
-                }
-                Err(e) => {
-                    // On Windows, connection errors might indicate ICMP Time Exceeded
-                    // Error codes like WSAETIMEDOUT (10060) = timeout
-                    // WSAECONNREFUSED (10061) = reached target but port closed
-                    let latency_ms = start.elapsed().as_millis() as f64;
-
-                    let kind = e.kind();
-                    match kind {
-                        std::io::ErrorKind::TimedOut => {
-                            // TTL exceeded - no IP info available without raw socket
-                            Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-                        }
-                        std::io::ErrorKind::ConnectionRefused => {
-                            // Reached target! Port is closed but we got there
-                            Ok((Some(target_ip_str), latency_ms))
-                        }
-                        _ => {
-                            // Other error - might be TTL exceeded
-                            Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
-                        }
-                    }
-                }
-            }
-        }).await;
-
-    match result {
-        Ok(Ok(r)) => Ok(r),
-        Ok(Err(e)) => Err(e),
-        Err(e) => Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>),
-    }
+    // Default port for HTTPS
+    (target.to_string(), 443)
 }
 
 /// Process a hop result and emit to frontend
@@ -643,16 +449,183 @@ fn calculate_packet_loss(latencies: &[Option<f64>]) -> f64 {
     (timeouts as f64 / latencies.len() as f64) * 100.0
 }
 
+/// Parse a tracetcp output line
+/// tracetcp format:
+///  1       4 ms    4 ms    4 ms    172.20.167.1
+///  2       2 ms    7 ms    2 ms    172.20.255.17
+///  3       2 ms    2 ms    1 ms    192.168.193.254
+///  4       Destination Reached in 9 ms. Connection established to 172.18.13.75
+fn parse_tracetcp_line(line: &str) -> Option<HopResult> {
+    // Skip empty lines and header/footer lines
+    let line_lower = line.to_lowercase();
+    if line.trim().is_empty()
+        || line_lower.contains("tracing route")
+        || line_lower.contains("over a maximum")
+        || line_lower.contains("trace complete")
+        || line_lower.contains("traceroute to")
+        || line_lower.contains("hops max")
+        || line_lower.contains("tracing tcp")
+        || line_lower.contains("on port")
+    {
+        return None;
+    }
+
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    // First part should be hop number
+    let hop_number: u32 = parts[0].parse().ok()?;
+
+    // Skip invalid hop numbers
+    if hop_number == 0 || hop_number > 100 {
+        return None;
+    }
+
+    let mut ip: Option<String> = None;
+    let mut latencies: Vec<Option<f64>> = Vec::new();
+
+    // Check for "Destination Reached" line (final hop)
+    let dest_reached_idx = parts.iter().position(|&p| p == "Destination");
+    if let Some(idx) = dest_reached_idx {
+        // Parse: "Destination Reached in 9 ms. Connection established to 172.18.13.75"
+        // Look for "in X ms" pattern
+        for i in (idx + 3)..parts.len() {
+            // Check for "ms" or "ms." (with trailing punctuation)
+            let part_clean = parts[i].trim_end_matches(|c: char| c == '.' || c == ',');
+            if part_clean == "ms" && i > idx + 3 {
+                if let Ok(latency) = parts[i - 1].parse::<f64>() {
+                    latencies.push(Some(latency));
+                }
+                break;
+            }
+        }
+        // Look for IP at the end
+        for part in parts.iter().rev() {
+            if part.contains('.') && part.parse::<IpAddr>().is_ok() {
+                ip = Some(part.to_string());
+                break;
+            }
+        }
+
+        if !latencies.is_empty() || ip.is_some() {
+            let avg_latency = latencies.first().copied().flatten();
+            return Some(HopResult {
+                hop_number,
+                ip,
+                hostname: None,
+                latencies,
+                avg_latency,
+                packet_loss: 0.0,
+            });
+        }
+        return None;
+    }
+
+    // Standard format: hop_number  latency  latency  latency  IP
+    // Example: 1       4 ms    4 ms    4 ms    172.20.167.1
+    let mut i = 1;
+
+    while i < parts.len() {
+        let part = parts[i];
+
+        // Check for timeout (shouldn't happen in tracetcp, but handle it)
+        if part == "*" {
+            latencies.push(None);
+            i += 1;
+            continue;
+        }
+
+        // Check for "Request" (part of "Request timed out")
+        if part == "Request" || part == "timed" || part == "out." {
+            i += 1;
+            continue;
+        }
+
+        // Check for latency pattern: number followed by "ms" or "ms."
+        if let Ok(latency) = part.parse::<f64>() {
+            if i + 1 < parts.len() {
+                let next_part = parts[i + 1].trim_end_matches(|c: char| c == '.' || c == ',');
+                if next_part == "ms" {
+                    latencies.push(Some(latency));
+                    i += 2;
+                    continue;
+                }
+            }
+            // Latency without "ms" (Unix format)
+            latencies.push(Some(latency));
+            i += 1;
+            continue;
+        }
+
+        // Check for "<1" pattern (less than 1ms)
+        if part.starts_with('<') {
+            if let Ok(latency) = part[1..].parse::<f64>() {
+                latencies.push(Some(latency));
+                i += 1;
+                if i < parts.len() && parts[i] == "ms" {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+
+        // Check for "ms" alone - skip it
+        if part == "ms" {
+            i += 1;
+            continue;
+        }
+
+        // Check for IP address
+        if part.contains('.') || part.contains(':') {
+            let potential_ip = part.replace("[", "").replace("]", "");
+            if potential_ip.parse::<IpAddr>().is_ok() {
+                ip = Some(potential_ip);
+            }
+        }
+
+        i += 1;
+    }
+
+    // Must have at least one latency or one IP to be valid
+    if latencies.is_empty() && ip.is_none() {
+        return None;
+    }
+
+    // Ensure we have exactly 3 latency probes (tracetcp default)
+    // If we have fewer, pad with the values we have
+    while latencies.len() < 3 {
+        if latencies.is_empty() {
+            break;
+        }
+        // Copy the last valid latency
+        if let Some(&last) = latencies.last() {
+            latencies.push(last);
+        }
+    }
+
+    let avg_latency = calculate_avg_latency(&latencies);
+    let packet_loss = calculate_packet_loss(&latencies);
+
+    log::debug!("Parsed tracetcp hop {}: ip={:?}, latencies={:?}, avg={:?}", hop_number, ip, latencies, avg_latency);
+
+    Some(HopResult {
+        hop_number,
+        ip,
+        hostname: None,
+        latencies,
+        avg_latency,
+        packet_loss,
+    })
+}
+
 /// Parse a traceroute output line (for ICMP/system command output)
+/// Windows tracert format:
+///  1     2 ms     3 ms     3 ms  172.20.111.1
+///  2     1 ms    <1 ms    1 ms  172.20.255.21
+///  3    *        *        *     Request timed out.
 fn parse_traceroute_line(line: &str) -> Option<HopResult> {
-    // Windows tracert format:
-    //  1     2 ms     3 ms     3 ms  172.20.111.1
-    //  2     1 ms    <1 ms    1 ms  172.20.255.21
-    //  3    *        *        *     Request timed out.
-
-    // Unix traceroute format:
-    //  1  192.168.1.1  1.234 ms  1.123 ms  1.456 ms
-
     // Skip empty lines and header lines
     if line.trim().is_empty()
         || line.contains("Tracing route")
@@ -660,6 +633,8 @@ fn parse_traceroute_line(line: &str) -> Option<HopResult> {
         || line.contains("Trace complete")
         || line.contains("traceroute to")
         || line.contains("hops max")
+        || line.contains("Tracing TCP")
+        || line.contains("on port")
     {
         return None;
     }
@@ -674,6 +649,43 @@ fn parse_traceroute_line(line: &str) -> Option<HopResult> {
 
     let mut ip: Option<String> = None;
     let mut latencies: Vec<Option<f64>> = Vec::new();
+
+    // Check for "Destination Reached" line (tracetcp format)
+    let dest_reached_idx = parts.iter().position(|&p| p == "Destination");
+    if let Some(idx) = dest_reached_idx {
+        // Parse: "Destination Reached in 9 ms. Connection established to 172.18.13.75"
+        // Look for "in X ms" pattern
+        if idx + 3 < parts.len() && parts.get(idx + 2) == Some(&"in") {
+            for i in (idx + 3)..parts.len() {
+                if parts[i] == "ms" && i > idx + 3 {
+                    if let Ok(latency) = parts[i - 1].parse::<f64>() {
+                        latencies.push(Some(latency));
+                    }
+                    break;
+                }
+            }
+        }
+        // Look for IP at the end
+        for part in parts.iter().rev() {
+            if part.contains('.') && part.parse::<IpAddr>().is_ok() {
+                ip = Some(part.to_string());
+                break;
+            }
+        }
+
+        if !latencies.is_empty() || ip.is_some() {
+            let avg_latency = latencies.first().copied().flatten();
+            return Some(HopResult {
+                hop_number,
+                ip,
+                hostname: None,
+                latencies,
+                avg_latency,
+                packet_loss: 0.0,
+            });
+        }
+        return None;
+    }
 
     let mut i = 1;
     while i < parts.len() {
@@ -694,10 +706,13 @@ fn parse_traceroute_line(line: &str) -> Option<HopResult> {
 
         // Check for latency pattern: number followed by "ms"
         if let Ok(latency) = part.parse::<f64>() {
-            if i + 1 < parts.len() && parts[i + 1] == "ms" {
-                latencies.push(Some(latency));
-                i += 2;
-                continue;
+            if i + 1 < parts.len() {
+                let next_part = parts[i + 1].trim_end_matches(|c: char| c == '.' || c == ',');
+                if next_part == "ms" {
+                    latencies.push(Some(latency));
+                    i += 2;
+                    continue;
+                }
             }
             // Latency without "ms" (Unix format)
             latencies.push(Some(latency));

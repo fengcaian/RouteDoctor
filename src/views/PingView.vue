@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
 import PingChart from '@/components/ping/PingChart.vue'
 import PingStats from '@/components/ping/PingStats.vue'
 import PingConfig from '@/components/ping/PingConfig.vue'
@@ -9,7 +8,6 @@ import { usePingStore, useSettingsStore } from '@/stores'
 import { usePing, usePingListener, stopAllPings } from '@/composables'
 import type { TargetConfig, PingResult } from '@/types'
 
-const router = useRouter()
 const pingStore = usePingStore()
 const settingsStore = useSettingsStore()
 
@@ -17,7 +15,7 @@ const settingsStore = useSettingsStore()
 const defaultTarget = '8.8.8.8'
 
 const target = ref(defaultTarget)
-const { startPing, stopPing, error } = usePing()
+const { startPing, stopPing } = usePing()
 
 // Add default target if not already present
 onMounted(() => {

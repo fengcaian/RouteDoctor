@@ -270,85 +270,145 @@ async fn save_partial_bandwidth_result(
     ).await
 }
 
-/// Run download test
+/// 通过 HTTP 下载测速
 async fn run_download_test(app_handle: &tauri::AppHandle, _server: &str) -> AppResult<f64> {
-    // Simulate download test by connecting to server and downloading data
-    // For a real implementation, you would connect to a speed test server
+    // 使用 Cloudflare 测速端点下载 25MB 数据
+    let url = "https://speed.cloudflare.com/__down?bytes=25000000";
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| AppError::BandwidthError(format!("创建 HTTP 客户端失败: {}", e)))?;
 
-    let test_duration = Duration::from_secs(10);
-    let chunk_size = 64 * 1024; // 64KB chunks
+    let response = client.get(url).send().await
+        .map_err(|e| AppError::BandwidthError(format!("下载请求失败: {}", e)))?;
 
     let start = Instant::now();
     let mut bytes_downloaded: u64 = 0;
 
-    // Simulated download - in real implementation, connect to actual server
-    // Here we just measure throughput to a public server
-    while start.elapsed() < test_duration {
-        // Check if stopped
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk_result) = stream.next().await {
+        // 检查是否被停止
         let state = BANDWIDTH_TEST_STATE.read().await;
         if !state.0 {
             return Ok(0.0);
         }
         drop(state);
 
-        // Simulate receiving data
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        bytes_downloaded += chunk_size;
+        match chunk_result {
+            Ok(chunk) => {
+                bytes_downloaded += chunk.len() as u64;
 
-        // Update progress
-        let progress_pct = (start.elapsed().as_secs_f64() / test_duration.as_secs_f64()) * 100.0;
-        let current_speed = (bytes_downloaded as f64 * 8.0) / start.elapsed().as_secs_f64() / 1_000_000.0;
+                let elapsed = start.elapsed().as_secs_f64();
+                if elapsed > 0.0 {
+                    let current_speed = (bytes_downloaded as f64 * 8.0) / elapsed / 1_000_000.0;
+                    let progress_pct = (bytes_downloaded as f64 / 25_000_000.0 * 100.0).min(100.0);
 
-        let progress = BandwidthProgress {
-            phase: "download".to_string(),
-            progress: progress_pct,
-            current_speed_mbps: current_speed,
-            bytes_transferred: bytes_downloaded,
-        };
-        let _ = app_handle.emit("bandwidth-progress", &progress);
+                    let progress = BandwidthProgress {
+                        phase: "download".to_string(),
+                        progress: progress_pct,
+                        current_speed_mbps: current_speed,
+                        bytes_transferred: bytes_downloaded,
+                    };
+                    let _ = app_handle.emit("bandwidth-progress", &progress);
+                }
+            }
+            Err(e) => {
+                log::error!("下载数据块失败: {}", e);
+                break;
+            }
+        }
     }
 
-    // Calculate final speed (Mbps)
-    let speed_mbps = (bytes_downloaded as f64 * 8.0) / test_duration.as_secs_f64() / 1_000_000.0;
-    Ok(speed_mbps)
+    let elapsed = start.elapsed().as_secs_f64();
+    if elapsed > 0.0 && bytes_downloaded > 0 {
+        Ok((bytes_downloaded as f64 * 8.0) / elapsed / 1_000_000.0)
+    } else {
+        Ok(0.0)
+    }
 }
 
-/// Run upload test
+/// 通过 HTTP 上传测速
 async fn run_upload_test(app_handle: &tauri::AppHandle, _server: &str) -> AppResult<f64> {
-    let test_duration = Duration::from_secs(10);
-    let chunk_size = 32 * 1024; // 32KB chunks
+    // 使用 Cloudflare 测速端点，单次上传 10MB 数据
+    let url = "https://speed.cloudflare.com/__up";
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| AppError::BandwidthError(format!("创建 HTTP 客户端失败: {}", e)))?;
 
-    let start = Instant::now();
-    let mut bytes_uploaded: u64 = 0;
+    let total_bytes: usize = 10_000_000; // 10MB
+    let payload = vec![0u8; total_bytes];
 
-    while start.elapsed() < test_duration {
-        // Check if stopped
+    // 先发送一个小请求预热连接（复用 TCP + TLS）
+    let _ = client.post(url).body(vec![0u8; 1024]).send().await;
+
+    // 检查是否被停止
+    {
         let state = BANDWIDTH_TEST_STATE.read().await;
-        if !state.0 {
-            return Ok(0.0);
-        }
-        drop(state);
-
-        // Simulate sending data
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        bytes_uploaded += chunk_size;
-
-        // Update progress
-        let progress_pct = (start.elapsed().as_secs_f64() / test_duration.as_secs_f64()) * 100.0;
-        let current_speed = (bytes_uploaded as f64 * 8.0) / start.elapsed().as_secs_f64() / 1_000_000.0;
-
-        let progress = BandwidthProgress {
-            phase: "upload".to_string(),
-            progress: progress_pct,
-            current_speed_mbps: current_speed,
-            bytes_transferred: bytes_uploaded,
-        };
-        let _ = app_handle.emit("bandwidth-progress", &progress);
+        if !state.0 { return Ok(0.0); }
     }
 
-    // Calculate final speed (Mbps)
-    let speed_mbps = (bytes_uploaded as f64 * 8.0) / test_duration.as_secs_f64() / 1_000_000.0;
-    Ok(speed_mbps)
+    // 启动进度上报线程
+    let app_clone = app_handle.clone();
+    let progress_flag = Arc::new(RwLock::new(true));
+    let flag_clone = progress_flag.clone();
+
+    let start = Instant::now();
+
+    // 后台定时上报进度（因为单次请求无法中途获取已发送字节数）
+    let progress_task = tokio::spawn(async move {
+        while *flag_clone.read().await {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let elapsed = start.elapsed().as_secs_f64();
+            // 预估进度（最多到 95%，等实际完成后设 100%）
+            let fake_progress = (elapsed / 15.0 * 100.0).min(95.0);
+            let progress = BandwidthProgress {
+                phase: "upload".to_string(),
+                progress: fake_progress,
+                current_speed_mbps: 0.0,
+                bytes_transferred: (fake_progress / 100.0 * total_bytes as f64) as u64,
+            };
+            let _ = app_clone.emit("bandwidth-progress", &progress);
+        }
+    });
+
+    // 单次 POST 发送全部数据
+    let upload_start = Instant::now();
+    let result = client.post(url)
+        .body(payload)
+        .send()
+        .await;
+
+    // 停止进度上报
+    *progress_flag.write().await = false;
+    let _ = progress_task.await;
+
+    match result {
+        Ok(_) => {
+            let elapsed = upload_start.elapsed().as_secs_f64();
+
+            // 上报 100% 进度
+            let progress = BandwidthProgress {
+                phase: "upload".to_string(),
+                progress: 100.0,
+                current_speed_mbps: (total_bytes as f64 * 8.0) / elapsed / 1_000_000.0,
+                bytes_transferred: total_bytes as u64,
+            };
+            let _ = app_handle.emit("bandwidth-progress", &progress);
+
+            if elapsed > 0.0 {
+                Ok((total_bytes as f64 * 8.0) / elapsed / 1_000_000.0)
+            } else {
+                Ok(0.0)
+            }
+        }
+        Err(e) => {
+            log::error!("上传失败: {}", e);
+            Ok(0.0)
+        }
+    }
 }
 
 /// Measure latency to server

@@ -33,3 +33,11 @@ pub async fn save_ping_result(
 ) -> AppResult<()> {
     database::save_ping_result(&app_handle, result).await
 }
+
+/// 清除所有历史记录
+#[tauri::command]
+pub async fn clear_history(
+    app_handle: tauri::AppHandle,
+) -> AppResult<()> {
+    database::clear_all_history(&app_handle).await
+}

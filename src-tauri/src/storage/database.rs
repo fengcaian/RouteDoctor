@@ -206,3 +206,16 @@ pub async fn cleanup_old_history(
 
     Ok(())
 }
+
+/// 清除所有历史记录
+pub async fn clear_all_history(
+    app_handle: &tauri::AppHandle,
+) -> AppResult<()> {
+    let db = app_handle.state::<DbState>();
+    let conn = db.0.lock().await;
+
+    conn.execute("DELETE FROM ping_results", [])?;
+    conn.execute("DELETE FROM ping_history", [])?;
+
+    Ok(())
+}

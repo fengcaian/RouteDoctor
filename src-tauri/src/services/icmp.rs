@@ -109,7 +109,7 @@ pub async fn stop_all_pings(app_handle: &tauri::AppHandle) -> AppResult<()> {
     let sessions_copy: Vec<_> = sessions.iter().map(|(t, i)| (t.clone(), i.session_id, i.stop_tx.clone(), i.results.clone())).collect();
     drop(sessions);
 
-    for (target, session_id, stop_tx, results) in sessions_copy {
+    for (_target, session_id, stop_tx, results) in sessions_copy {
         let _ = stop_tx.send(()).await;
 
         let end_time = chrono::Utc::now().timestamp_millis();

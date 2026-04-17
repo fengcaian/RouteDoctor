@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated } from 'vue'
 import { useHistoryStore, type HistorySession } from '@/stores/historyStore'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
 const historyStore = useHistoryStore()
 
@@ -8,8 +9,12 @@ const historyStore = useHistoryStore()
 const selectedType = ref<'all' | 'ping' | 'traceroute' | 'bandwidth'>('all')
 const searchTarget = ref('')
 
-// Load history on mount
+// 首次挂载和每次从 keep-alive 激活时都加载历史记录
 onMounted(() => {
+  historyStore.loadHistory()
+})
+
+onActivated(() => {
   historyStore.loadHistory()
 })
 
@@ -73,21 +78,42 @@ function clearFilter() {
   selectedType.value = 'all'
   searchTarget.value = ''
 }
+
+// 清除所有历史记录
+const showClearConfirm = ref(false)
+
+function handleClearHistory() {
+  showClearConfirm.value = true
+}
+
+async function confirmClear() {
+  showClearConfirm.value = false
+  await historyStore.clearAllHistory()
+}
 </script>
 
 <template>
   <div class="history-view">
+    <ConfirmDialog
+      :visible="showClearConfirm"
+      title="清除历史记录"
+      message="是否清除所有历史记录？此操作不可撤销。"
+      confirmText="清除"
+      cancelText="取消"
+      @confirm="confirmClear"
+      @cancel="showClearConfirm = false"
+    />
     <div class="view-header">
       <div>
         <h2>History</h2>
         <p class="subtitle">View and export previous test results</p>
       </div>
       <button
-        class="refresh-btn"
-        @click="historyStore.loadHistory()"
-        :disabled="historyStore.isLoading"
+        class="clear-history-btn"
+        @click="handleClearHistory"
+        :disabled="historyStore.isLoading || historyStore.records.length === 0"
       >
-        {{ historyStore.isLoading ? 'Loading...' : 'Refresh' }}
+        清除历史
       </button>
     </div>
 
@@ -196,6 +222,7 @@ function clearFilter() {
   justify-content: space-between;
   align-items: center;
   flex-shrink: 0;
+  gap: 8px;
 
   h2 {
     font-size: 20px;
@@ -210,23 +237,24 @@ function clearFilter() {
     margin-top: 2px;
   }
 
-  .refresh-btn {
+  .clear-history-btn {
     padding: 8px 16px;
-    background: var(--primary-color);
-    color: white;
-    border: none;
+    background: transparent;
+    color: var(--error-color, #ef4444);
+    border: 1px solid var(--error-color, #ef4444);
     border-radius: 6px;
     cursor: pointer;
     font-size: 14px;
     font-weight: 500;
-    transition: background 0.2s;
+    transition: all 0.2s;
 
     &:hover:not(:disabled) {
-      background: var(--primary-color-hover);
+      background: var(--error-color, #ef4444);
+      color: white;
     }
 
     &:disabled {
-      opacity: 0.6;
+      opacity: 0.4;
       cursor: not-allowed;
     }
   }

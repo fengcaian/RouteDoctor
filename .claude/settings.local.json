@@ -35,7 +35,9 @@
       "Bash(npx vue-tsc:*)",
       "Bash(findstr :1420)",
       "Bash(xargs -r taskkill /F /PID)",
-      "Bash(kill 30376:*)"
+      "Bash(kill 30376:*)",
+      "Bash(tracetcp:*)",
+      "Bash(py:*)"
     ]
   }
 }

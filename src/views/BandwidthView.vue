@@ -1,7 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
 import SpeedGauge from '@/components/bandwidth/SpeedGauge.vue'
-import SpeedChart from '@/components/bandwidth/SpeedChart.vue'
 import BandwidthConfig from '@/components/bandwidth/BandwidthConfig.vue'
 import { useBandwidthStore } from '@/stores'
 import { useBandwidth, useBandwidthListener } from '@/composables'
@@ -54,8 +52,6 @@ function handleClear() {
         @stop="handleStop"
         @clear="handleClear"
       />
-
-      <SpeedChart />
     </div>
   </div>
 </template>
@@ -64,33 +60,42 @@ function handleClear() {
 .bandwidth-view {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 32px;
+  padding: 24px;
+  height: 100%;
 }
 
 .view-header {
   h2 {
-    font-size: 20px;
+    font-size: 24px;
     font-weight: 700;
     color: var(--text-primary);
     margin: 0;
   }
 
   .subtitle {
-    font-size: 12px;
+    font-size: 14px;
     color: var(--text-muted);
-    margin-top: 2px;
+    margin-top: 6px;
   }
 }
 
 .bandwidth-content {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 24px;
   align-items: center;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .gauges-section {
   display: flex;
-  gap: 24px;
+  gap: 48px;
+  justify-content: center;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
 }
 </style>

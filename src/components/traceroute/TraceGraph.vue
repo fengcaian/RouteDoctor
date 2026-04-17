@@ -42,7 +42,7 @@ const treeData = computed(() => {
     itemStyle: {
       color: !hop.ip ? '#F44336' : (hop.avg_latency && hop.avg_latency < 50 ? '#4CAF50' : '#FF9800')
     },
-    children: []
+    children: [] as any[]
   })
 
   // Build nodes

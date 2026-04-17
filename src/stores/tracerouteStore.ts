@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import type { TracerouteResult, HopResult, ProbeMethod } from '@/types'
 
 export const useTracerouteStore = defineStore('traceroute', () => {

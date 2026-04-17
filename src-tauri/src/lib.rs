@@ -59,6 +59,7 @@ pub fn run() {
             commands::bandwidth::stop_bandwidth_test,
             commands::history::get_history,
             commands::history::save_ping_result,
+            commands::history::clear_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

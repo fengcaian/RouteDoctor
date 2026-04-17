@@ -13,11 +13,13 @@ export const useBandwidthStore = defineStore('bandwidth', () => {
   })
   const isRunning = ref(false)
   const history = ref<BandwidthResult[]>([])
-
+  // 保存 download 阶段完成时的速度，供仪表盘在 upload 阶段持续显示
+  const downloadPhaseSpeed = ref(0)
   // Actions
   function setRunning(running: boolean) {
     isRunning.value = running
     if (running) {
+      downloadPhaseSpeed.value = 0
       progress.value = {
         phase: 'idle',
         progress: 0,
@@ -28,6 +30,10 @@ export const useBandwidthStore = defineStore('bandwidth', () => {
   }
 
   function updateProgress(data: BandwidthProgress) {
+    // 持续记录 download 阶段的最新速度
+    if (data.phase === 'download' && data.current_speed_mbps > 0) {
+      downloadPhaseSpeed.value = data.current_speed_mbps
+    }
     progress.value = data
   }
 
@@ -46,6 +52,7 @@ export const useBandwidthStore = defineStore('bandwidth', () => {
 
   function resetStore() {
     lastResult.value = null
+    downloadPhaseSpeed.value = 0
     progress.value = {
       phase: 'idle',
       progress: 0,
@@ -61,6 +68,7 @@ export const useBandwidthStore = defineStore('bandwidth', () => {
     progress,
     isRunning,
     history,
+    downloadPhaseSpeed,
     setRunning,
     updateProgress,
     setResult,

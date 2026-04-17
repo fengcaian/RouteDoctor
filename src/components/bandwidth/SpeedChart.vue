@@ -23,7 +23,7 @@ const chartOption = computed(() => ({
   },
   xAxis: {
     type: 'category',
-    data: history.value.map((h, i) => `Test ${i + 1}`),
+    data: history.value.map((_, i) => `Test ${i + 1}`),
     axisLine: {
       lineStyle: { color: 'var(--border-color)' }
     },

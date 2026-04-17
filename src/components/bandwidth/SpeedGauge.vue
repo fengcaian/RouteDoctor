@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { GaugeChart } from 'echarts/charts'
 import { TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import type { BandwidthResult, BandwidthProgress } from '@/types'
 import { useBandwidthStore } from '@/stores'
 
 use([GaugeChart, TooltipComponent, CanvasRenderer])
@@ -17,77 +16,50 @@ const props = defineProps<{
 const bandwidthStore = useBandwidthStore()
 
 const speed = computed(() => {
+  let val = 0
+
   if (bandwidthStore.isRunning) {
-    return bandwidthStore.progress.current_speed_mbps
-  }
-  if (bandwidthStore.lastResult) {
-    return props.type === 'download'
+    const currentPhase = bandwidthStore.progress.phase
+
+    if (props.type === currentPhase) {
+      // 当前正在测试的阶段：显示实时速度
+      val = bandwidthStore.progress.current_speed_mbps
+    } else if (props.type === 'download' && (currentPhase === 'upload' || currentPhase === 'idle')) {
+      // download 已完成，显示 download 阶段记录的速度
+      val = bandwidthStore.downloadPhaseSpeed
+    }
+  } else if (bandwidthStore.lastResult) {
+    // 测试结束，显示最终结果
+    val = props.type === 'download'
       ? bandwidthStore.lastResult.download_speed_mbps
       : bandwidthStore.lastResult.upload_speed_mbps
   }
-  return 0
+
+  // 防止 NaN / undefined
+  return Number.isFinite(val) ? val : 0
 })
 
-const chartOption = computed(() => ({
-  series: [
-    {
-      type: 'gauge',
-      axisLine: {
-        lineStyle: {
-          width: 8,
-          color: [
-            [0.3, '#67e0e3'],
-            [0.7, '#37a2da'],
-            [1, '#fd666d']
-          ]
-        }
-      },
-      pointer: {
-        itemStyle: {
-          color: 'auto'
-        }
-      },
-      axisTick: {
-        distance: -10,
-        length: 3,
-        lineStyle: {
-          color: '#fff',
-          width: 1
-        }
-      },
-      splitLine: {
-        distance: -30,
-        length: 8,
-        lineStyle: {
-          color: '#fff',
-          width: 2
-        }
-      },
-      axisLabel: {
-        color: 'inherit',
-        distance: 30,
-        fontSize: 9
-      },
-      detail: {
-        valueAnimation: true,
-        formatter: '{value} Mbps',
-        color: 'inherit',
-        fontSize: 11
-      },
-      title: {
-        show: false
-      },
-      radius: '85%',
-      startAngle: 210,
-      endAngle: -30,
-      data: [
-        {
-          value: Math.round(speed.value * 10) / 10
-        }
-      ]
-    }
-  ]
-}))
+const chartOption = computed(() => {
+  const currentSpeed = Math.round(speed.value * 10) / 10
+
+  return {
+    series: [
+      {
+        name: 'Pressure',
+        type: 'gauge',
+        detail: {
+          formatter: '{value} Mbps',
+          fontSize: 14
+        },
+        data: [
+          {
+            value: currentSpeed
+          }
+        ]
+      }
+    ]
+  }
+})
 </script>
 
 <template>
@@ -102,11 +74,14 @@ const chartOption = computed(() => ({
 
 <style lang="scss" scoped>
 .speed-gauge {
-  width: 180px;
-  height: 160px;
+  flex: 1;
+  min-width: 200px;
+  min-height: 0;
+  max-width: 600px;
+  max-height: 600px;
   background: var(--card-bg);
   border-radius: 12px;
-  padding: 8px;
+  padding: 16px;
   border: 1px solid var(--border-color);
 }
 </style>

@@ -61,6 +61,16 @@ export const useHistoryStore = defineStore('history', () => {
     records.value = []
   }
 
+  async function clearAllHistory() {
+    try {
+      await invoke('clear_history')
+      records.value = []
+    } catch (e: any) {
+      error.value = e.message || '清除历史记录失败'
+      console.error('Failed to clear history:', e)
+    }
+  }
+
   function addRecord(record: HistorySession) {
     records.value.unshift(record)
   }
@@ -71,6 +81,7 @@ export const useHistoryStore = defineStore('history', () => {
     error,
     loadHistory,
     clearRecords,
+    clearAllHistory,
     addRecord
   }
 })
