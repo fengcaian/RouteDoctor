@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { TracerouteResult, HopResult } from '@/types'
 import { useTracerouteStore } from '@/stores'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   target: string
@@ -39,7 +42,7 @@ function getStatusClass(hop: HopResult): string {
     <div v-if="isRunning" class="progress-bar">
       <div class="progress-content">
         <span class="progress-icon">🔍</span>
-        <span class="progress-text">正在追踪路由... 探测第 {{ currentHop }} 跳</span>
+        <span class="progress-text">{{ t('traceroute.routeTracing', { hop: currentHop }) }}</span>
       </div>
       <div class="progress-animation"></div>
     </div>
@@ -48,12 +51,12 @@ function getStatusClass(hop: HopResult): string {
     <table v-if="hops.length > 0" class="hops-table header-table">
       <thead>
         <tr>
-          <th>Hop</th>
+          <th>{{ t('traceroute.hop') }}</th>
           <th>IP</th>
-          <th>Hostname</th>
-          <th>Latencies</th>
-          <th>Avg</th>
-          <th>Loss</th>
+          <th>{{ t('traceroute.hostname') }}</th>
+          <th>{{ t('traceroute.latencies') }}</th>
+          <th>{{ t('traceroute.avgLatency') }}</th>
+          <th>{{ t('traceroute.lossRate') }}</th>
         </tr>
       </thead>
     </table>
@@ -77,7 +80,7 @@ function getStatusClass(hop: HopResult): string {
                 <span class="loading-dot"></span>
                 <span class="loading-dot"></span>
                 <span class="loading-dot"></span>
-                <span class="loading-text">等待下一跳响应...</span>
+                <span class="loading-text">{{ t('traceroute.waitingNext') }}</span>
               </div>
             </td>
           </tr>
@@ -88,14 +91,14 @@ function getStatusClass(hop: HopResult): string {
     <!-- Empty State -->
     <div v-if="!isRunning && hops.length === 0" class="empty-state">
       <div class="empty-icon">📡</div>
-      <p>暂无路由追踪数据</p>
-      <p class="hint">在上方输入目标地址并点击"开始追踪"</p>
+      <p>{{ t('traceroute.noData') }}</p>
+      <p class="hint">{{ t('traceroute.noDataHint') }}</p>
     </div>
 
     <!-- Initial Loading State -->
     <div v-if="isRunning && hops.length === 0" class="initial-loading">
       <div class="loading-spinner"></div>
-      <p>正在初始化...</p>
+      <p>{{ t('traceroute.initializingShort') }}</p>
     </div>
   </div>
 </template>
@@ -307,6 +310,7 @@ tr {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  flex: 1;
   padding: 24px;
   color: var(--text-muted);
 

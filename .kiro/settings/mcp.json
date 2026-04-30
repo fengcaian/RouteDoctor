@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "mempalace": {
+      "command": "C:\\Users\\kingdee\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
+      "args": ["-m", "mempalace.mcp_server"],
+      "disabled": false,
+      "autoApprove": [
+        "mempalace_search",
+        "mempalace_kg_query",
+        "mempalace_kg_add",
+        "mempalace_kg_timeline",
+        "mempalace_kg_stats",
+        "mempalace_diary_read",
+        "mempalace_diary_write",
+        "mempalace_add_drawer",
+        "mempalace_status",
+        "mempalace_list_wings",
+        "mempalace_list_rooms",
+        "mempalace_list_drawers",
+        "mempalace_get_drawer",
+        "mempalace_check_duplicate",
+        "mempalace_traverse"
+      ]
+    }
+  }
+}

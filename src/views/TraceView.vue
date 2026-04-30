@@ -46,8 +46,8 @@ function handleClear(t: string) {
 <template>
   <div class="traceroute-view">
     <div class="view-header">
-      <h2>Traceroute</h2>
-      <p class="subtitle">Network path discovery and hop analysis</p>
+      <h2>{{ $t('traceroute.title') }}</h2>
+      <p class="subtitle">{{ $t('traceroute.subtitle') }}</p>
     </div>
 
     <div class="trace-content">

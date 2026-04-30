@@ -48,6 +48,14 @@ export const useBandwidthStore = defineStore('bandwidth', () => {
 
   function clearHistory() {
     history.value = []
+    lastResult.value = null
+    downloadPhaseSpeed.value = 0
+    progress.value = {
+      phase: 'idle',
+      progress: 0,
+      current_speed_mbps: 0,
+      bytes_transferred: 0
+    }
   }
 
   function resetStore() {

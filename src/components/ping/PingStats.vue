@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { PingStatistics } from '@/types'
 import { usePingStore } from '@/stores'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   target: string
@@ -35,37 +38,37 @@ const avgColor = computed(() => {
 <template>
   <div class="ping-stats">
     <div class="stat-item">
-      <span class="stat-label">Sent</span>
+      <span class="stat-label">{{ t('ping.sent') }}</span>
       <span class="stat-value">{{ stats.sent }}</span>
     </div>
     <div class="stat-item">
-      <span class="stat-label">Received</span>
+      <span class="stat-label">{{ t('ping.received') }}</span>
       <span class="stat-value">{{ stats.received }}</span>
     </div>
     <div class="stat-item">
-      <span class="stat-label">Lost</span>
+      <span class="stat-label">{{ t('ping.lost') }}</span>
       <span class="stat-value" :style="{ color: lossColor }">{{ stats.lost }} ({{ stats.loss_rate.toFixed(1) }}%)</span>
     </div>
     <div class="stat-divider"></div>
     <div class="stat-item">
-      <span class="stat-label">Min</span>
+      <span class="stat-label">{{ t('ping.min') }}</span>
       <span class="stat-value">{{ formatValue(stats.min_ms) }}</span>
     </div>
     <div class="stat-item">
-      <span class="stat-label">Max</span>
+      <span class="stat-label">{{ t('ping.max') }}</span>
       <span class="stat-value">{{ formatValue(stats.max_ms) }}</span>
     </div>
     <div class="stat-item">
-      <span class="stat-label">Avg</span>
+      <span class="stat-label">{{ t('ping.avg') }}</span>
       <span class="stat-value" :style="{ color: avgColor }">{{ formatValue(stats.avg_ms) }}</span>
     </div>
     <div class="stat-divider"></div>
     <div class="stat-item">
-      <span class="stat-label">Jitter</span>
+      <span class="stat-label">{{ t('ping.jitter') }}</span>
       <span class="stat-value">{{ formatValue(stats.jitter_ms) }}</span>
     </div>
     <div class="stat-item">
-      <span class="stat-label">Std Dev</span>
+      <span class="stat-label">{{ t('ping.stdDev') }}</span>
       <span class="stat-value">{{ formatValue(stats.std_dev_ms) }}</span>
     </div>
   </div>

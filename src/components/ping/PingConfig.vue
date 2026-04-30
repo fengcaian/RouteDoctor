@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { TargetConfig } from '@/types'
 import { useSettingsStore } from '@/stores'
+
+const { t } = useI18n()
 
 const emit = defineEmits<{
   (e: 'start', config: TargetConfig): void
@@ -21,6 +24,12 @@ const timeoutMs = ref(settingsStore.settings.defaultPingTimeout)
 const packetSize = ref(64)
 const targetInput = ref(props.target)
 const validationError = ref('')
+
+// 当父组件传入的 target 变化时（如切换标签页），同步更新输入框
+watch(() => props.target, (newTarget) => {
+  targetInput.value = newTarget
+  validationError.value = ''
+})
 
 // 校验函数
 function validateTarget(value: string): boolean {
@@ -57,7 +66,7 @@ function validateTarget(value: string): boolean {
   // 检查是否看起来像 IP 但实际无效
   const looksLikeIP = /^[\d.]+$/.test(trimmed)
   if (looksLikeIP) {
-    validationError.value = 'IP 地址格式无效，每段数值应在 0-255 之间'
+    validationError.value = t('validation.invalidIP')
     return false
   }
 
@@ -66,7 +75,7 @@ function validateTarget(value: string): boolean {
   const hasNumericParts = parts.some(p => /^\d+$/.test(p))
   const hasNonNumericParts = parts.some(p => !/^\d+$/.test(p))
   if (hasNumericParts && hasNonNumericParts) {
-    validationError.value = '地址格式无效，请输入正确的 IP 地址或域名'
+    validationError.value = t('validation.invalidFormat')
     return false
   }
 
@@ -86,20 +95,20 @@ function validateTarget(value: string): boolean {
 
   // 必须有至少两段
   if (parts.length < 2) {
-    validationError.value = '域名格式无效，请输入完整的域名（如 google.com）'
+    validationError.value = t('validation.invalidDomain')
     return false
   }
 
   // 检查总长度
   if (trimmed.length > 253) {
-    validationError.value = '域名长度超出限制'
+    validationError.value = t('validation.domainTooLong')
     return false
   }
 
   // 检查每段
   for (const label of parts) {
     if (!label || label.length > 63 || !labelRegex.test(label)) {
-      validationError.value = '域名格式无效，请输入有效的域名'
+      validationError.value = t('validation.invalidDomainLabel')
       return false
     }
   }
@@ -174,14 +183,14 @@ function onInputChange(value: string) {
   <div class="ping-config">
     <div class="config-row">
       <div class="config-field">
-        <label class="config-label">Target</label>
+        <label class="config-label">{{ t('common.target') }}</label>
         <div class="input-wrapper">
           <input
             v-model="targetInput"
             type="text"
             class="config-input"
             :class="{ 'input-error': validationError }"
-            placeholder="IP or hostname"
+            :placeholder="t('common.targetPlaceholder')"
             :disabled="isRunning"
             @input="onInputChange(targetInput)"
           />
@@ -197,7 +206,7 @@ function onInputChange(value: string) {
         <span v-if="validationError" class="error-text">{{ validationError }}</span>
       </div>
       <div class="config-field">
-        <label class="config-label">Interval (ms)</label>
+        <label class="config-label">{{ t('ping.interval') }}</label>
         <input
           v-model.number="intervalMs"
           type="number"
@@ -209,7 +218,7 @@ function onInputChange(value: string) {
         />
       </div>
       <div class="config-field">
-        <label class="config-label">Timeout (ms)</label>
+        <label class="config-label">{{ t('ping.timeout') }}</label>
         <input
           v-model.number="timeoutMs"
           type="number"
@@ -221,7 +230,7 @@ function onInputChange(value: string) {
         />
       </div>
       <div class="config-field">
-        <label class="config-label">Packet Size</label>
+        <label class="config-label">{{ t('ping.packetSize') }}</label>
         <input
           v-model.number="packetSize"
           type="number"
@@ -240,20 +249,20 @@ function onInputChange(value: string) {
         @click="handleStart"
         :disabled="!isValid"
       >
-        Start Ping
+        {{ t('ping.startPing') }}
       </button>
       <button
         v-else
         class="action-btn stop"
         @click="handleStop"
       >
-        Stop Ping
+        {{ t('ping.stopPing') }}
       </button>
       <button
         class="action-btn clear"
         @click="handleClear"
       >
-        Clear Results
+        {{ t('ping.clearResults') }}
       </button>
     </div>
   </div>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { TreeChart } from 'echarts/charts'
@@ -15,6 +16,7 @@ const props = defineProps<{
 }>()
 
 const traceStore = useTracerouteStore()
+const { t } = useI18n()
 
 const result = computed<TracerouteResult | undefined>(() => traceStore.getResult(props.target))
 const isRunning = computed(() => traceStore.isRunning(props.target))
@@ -55,7 +57,7 @@ const treeData = computed(() => {
 
   return {
     name: 'local',
-    label: { show: true, formatter: '本机', position: 'inside', fontSize: 11, color: '#fff' },
+    label: { show: true, formatter: t('traceroute.local'), position: 'inside', fontSize: 11, color: '#fff' },
     itemStyle: { color: '#2196F3' },
     children: nodes.length > 0 ? [nodes[0]] : []
   }
@@ -113,7 +115,7 @@ const chartOption = computed(() => ({
     textStyle: { color: '#fff', fontSize: 12 },
     formatter: (params: any) => {
       const hopNum = params.name?.replace('hop_', '')
-      if (params.name === 'local') return '本机'
+      if (params.name === 'local') return t('traceroute.local')
       const hop = result.value?.hops.find(h => h.hop_number.toString() === hopNum)
       if (!hop) return params.name
       const ip = hop.ip || 'Timeout'
@@ -121,8 +123,8 @@ const chartOption = computed(() => ({
       return `<div style="padding:4px;">
         <div><b>Hop ${hop.hop_number}</b></div>
         <div>IP: ${ip}</div>
-        <div>延迟: ${latency}</div>
-        <div>丢包: ${hop.packet_loss.toFixed(0)}%</div>
+        <div>${t('traceroute.latencyLabel')} ${latency}</div>
+        <div>${t('traceroute.lossLabel')} ${hop.packet_loss.toFixed(0)}%</div>
       </div>`
     }
   }
@@ -134,16 +136,16 @@ const chartOption = computed(() => ({
     <!-- Loading State -->
     <div v-if="isRunning && hops.length === 0" class="loading-state">
       <div class="loading-spinner"></div>
-      <p class="loading-text">正在初始化路由追踪...</p>
-      <p class="loading-hint">正在解析目标地址并准备探测</p>
+      <p class="loading-text">{{ t('traceroute.initializing') }}</p>
+      <p class="loading-hint">{{ t('traceroute.initHint') }}</p>
     </div>
 
     <!-- In Progress State -->
     <div v-else-if="isRunning && hops.length > 0" class="in-progress">
       <div class="progress-header">
         <div class="progress-info">
-          <span class="status-badge running">追踪中</span>
-          <span class="hop-progress">正在探测第 {{ currentHop }} 跳</span>
+          <span class="status-badge running">{{ t('traceroute.tracingStatus') }}</span>
+          <span class="hop-progress">{{ t('traceroute.probingHop', { hop: currentHop }) }}</span>
         </div>
         <div class="progress-dots">
           <span class="dot"></span>
@@ -156,19 +158,19 @@ const chartOption = computed(() => ({
     <!-- Result Info -->
     <div v-if="result && result.hops.length > 0" class="trace-info">
       <div class="info-item">
-        <span class="label">目标:</span>
+        <span class="label">{{ t('traceroute.targetLabel') }}</span>
         <span class="value">{{ result.target }}</span>
       </div>
       <div class="info-item">
-        <span class="label">IP:</span>
+        <span class="label">{{ t('traceroute.ipLabel') }}</span>
         <span class="value">{{ result.target_ip }}</span>
       </div>
       <div class="info-item">
-        <span class="label">跳数:</span>
+        <span class="label">{{ t('traceroute.hopsLabel') }}</span>
         <span class="value">{{ result.hops.length }}</span>
       </div>
       <div v-if="result.completed" class="info-item">
-        <span class="label status completed">已完成</span>
+        <span class="label status completed">{{ t('traceroute.completedStatus') }}</span>
       </div>
     </div>
 
@@ -182,7 +184,7 @@ const chartOption = computed(() => ({
 
     <!-- Empty State -->
     <div v-if="!isRunning && hops.length === 0" class="empty-state">
-      <p>点击"开始追踪"进行路由追踪</p>
+      <p>{{ t('traceroute.emptyHint') }}</p>
     </div>
   </div>
 </template>

@@ -413,8 +413,11 @@ async fn run_upload_test(app_handle: &tauri::AppHandle, _server: &str) -> AppRes
 
 /// Measure latency to server
 async fn measure_latency(server: &str) -> AppResult<f64> {
-    let addr = server.parse::<std::net::SocketAddr>()
-        .map_err(|_| AppError::BandwidthError(format!("Invalid server address: {}", server)))?;
+    // 支持域名:端口格式，先做 DNS 解析
+    let addr = tokio::net::lookup_host(server).await
+        .map_err(|e| AppError::BandwidthError(format!("DNS 解析失败: {}", e)))?
+        .next()
+        .ok_or_else(|| AppError::BandwidthError(format!("无法解析地址: {}", server)))?;
 
     let start = Instant::now();
     let _stream = TcpStream::connect(&addr).await

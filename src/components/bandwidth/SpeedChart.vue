@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { LineChart, BarChart } from 'echarts/charts'
@@ -10,6 +11,7 @@ import { useBandwidthStore } from '@/stores'
 use([LineChart, BarChart, GridComponent, TooltipComponent, CanvasRenderer])
 
 const bandwidthStore = useBandwidthStore()
+const { t } = useI18n()
 
 const history = computed(() => bandwidthStore.history.slice(-20))
 
@@ -51,7 +53,7 @@ const chartOption = computed(() => ({
   },
   series: [
     {
-      name: 'Download',
+      name: t('bandwidth.download'),
       type: 'bar',
       data: history.value.map(h => h.download_speed_mbps),
       itemStyle: {
@@ -60,7 +62,7 @@ const chartOption = computed(() => ({
       }
     },
     {
-      name: 'Upload',
+      name: t('bandwidth.upload'),
       type: 'bar',
       data: history.value.map(h => h.upload_speed_mbps),
       itemStyle: {
@@ -70,7 +72,7 @@ const chartOption = computed(() => ({
     }
   ],
   legend: {
-    data: ['Download', 'Upload'],
+    data: [t('bandwidth.download'), t('bandwidth.upload')],
     textStyle: { color: 'var(--text-muted)' },
     top: 0
   },
@@ -82,7 +84,7 @@ const chartOption = computed(() => ({
     formatter: (params: any) => {
       const download = params[0]?.value || 0
       const upload = params[1]?.value || 0
-      return `Download: ${download.toFixed(1)} Mbps<br/>Upload: ${upload.toFixed(1)} Mbps`
+      return `${t('bandwidth.download')}: ${download.toFixed(1)} Mbps<br/>${t('bandwidth.upload')}: ${upload.toFixed(1)} Mbps`
     }
   }
 }))
@@ -96,7 +98,7 @@ const chartOption = computed(() => ({
       style="width: 100%; height: 100%"
     />
     <div v-if="history.length === 0" class="empty-state">
-      <p>No speed test history</p>
+      <p>{{ t('bandwidth.noHistory') }}</p>
     </div>
   </div>
 </template>

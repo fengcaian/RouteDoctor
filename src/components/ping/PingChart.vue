@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { LineChart } from 'echarts/charts'
@@ -15,6 +16,7 @@ const props = defineProps<{
 }>()
 
 const pingStore = usePingStore()
+const { t } = useI18n()
 
 // ========== 配置参数 ==========
 const MAX_DATA_POINTS = 720      // 最大数据点数（12 分钟 * 60 秒）
@@ -133,11 +135,10 @@ const chartOption = ref({
       if (!params || !Array.isArray(params) || params.length === 0) return ''
       const p = params[0]
       if (!p) return ''
-      // 空数据点或空标签不显示 tooltip
       if (p.value === null || p.value === undefined || !p.name || p.name === '') {
         return ''
       }
-      return `${p.name}<br/>Latency: ${p.value.toFixed(1)} ms`
+      return `${p.name}<br/>${t('ping.latency')}: ${p.value.toFixed(1)} ms`
     }
   }
 })
@@ -300,10 +301,21 @@ const unsubscribe = pingStore.$subscribe(() => {
   })
 })
 
-// 监听 target 变化
+// 监听 target 变化：重置图表并加载新目标的已有数据
 watch(() => props.target, () => {
   reset()
   lastSeq = -1
+
+  // 切换标签页后，主动加载新目标在后台累积的所有结果
+  nextTick(() => {
+    const results = pingStore.getResults(props.target)
+    if (results.length > 0) {
+      results.forEach(r => {
+        addData(r)
+        lastSeq = Math.max(lastSeq, r.seq)
+      })
+    }
+  })
 })
 
 // ========== 生命周期 ==========
@@ -352,7 +364,7 @@ onUnmounted(() => {
       style="width: 100%; height: 100%"
     />
     <div v-if="totalCount === 0" class="empty-chart">
-      <p>暂无数据</p>
+      <p>{{ t('ping.noData') }}</p>
     </div>
   </div>
 </template>

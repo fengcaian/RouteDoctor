@@ -79,6 +79,13 @@ export const usePingStore = defineStore('ping', () => {
     return targets.value.get(target)
   }
 
+  // 获取指定目标的最新一条 Ping 结果（用于 TabBar 显示延迟值和超时状态）
+  function getLatestResult(target: string): PingResult | undefined {
+    const targetResults = results.value.get(target)
+    if (!targetResults || targetResults.length === 0) return undefined
+    return targetResults[targetResults.length - 1]
+  }
+
   function resetStore() {
     targets.value.clear()
     results.value.clear()
@@ -100,6 +107,7 @@ export const usePingStore = defineStore('ping', () => {
     getResults,
     getStatistics,
     getConfig,
+    getLatestResult,
     resetStore
   }
 })

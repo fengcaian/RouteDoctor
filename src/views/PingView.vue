@@ -1,98 +1,274 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onActivated, onDeactivated, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
+import PingTabBar from '@/components/ping/PingTabBar.vue'
 import PingChart from '@/components/ping/PingChart.vue'
 import PingStats from '@/components/ping/PingStats.vue'
 import PingConfig from '@/components/ping/PingConfig.vue'
 import PingTable from '@/components/ping/PingTable.vue'
 import { usePingStore, useSettingsStore } from '@/stores'
 import { usePing, usePingListener, stopAllPings } from '@/composables'
-import type { TargetConfig, PingResult } from '@/types'
+import type { TargetConfig, PingResult, PingTab } from '@/types'
 
+const { t } = useI18n()
 const pingStore = usePingStore()
 const settingsStore = useSettingsStore()
-
-// Default target
-const defaultTarget = '8.8.8.8'
-
-const target = ref(defaultTarget)
 const { startPing, stopPing } = usePing()
 
-// Add default target if not already present
+// ==================== 任务 5.1：内部状态管理 ====================
+
+// 标签页列表和活跃标签页 ID
+const tabs = ref<PingTab[]>([])
+const activeTabId = ref<string>('')
+
+// 当前活跃标签页对象
+const activeTab = computed<PingTab | undefined>(() =>
+  tabs.value.find(tab => tab.id === activeTabId.value)
+)
+
+// 当前活跃目标地址
+const activeTarget = computed<string>(() =>
+  activeTab.value?.target ?? ''
+)
+
+// 是否有正在运行的目标（用于控制"全部停止"按钮显隐）
+const hasRunningTargets = computed<boolean>(() =>
+  tabs.value.some(tab => tab.target && pingStore.isRunning(tab.target))
+)
+
+// ==================== 任务 5.2：标签页管理方法 ====================
+
+/**
+ * 创建默认标签页（目标为 8.8.8.8）
+ */
+function createDefaultTab(): PingTab {
+  const tab: PingTab = {
+    id: crypto.randomUUID(),
+    target: '8.8.8.8'
+  }
+  return tab
+}
+
+/**
+ * 新增空白标签页，设为活跃
+ */
+function addTab(): void {
+  const tab: PingTab = {
+    id: crypto.randomUUID(),
+    target: ''
+  }
+  tabs.value.push(tab)
+  activeTabId.value = tab.id
+}
+
+/**
+ * 关闭标签页：停止 Ping 会话，从 store 移除数据，从 tabs 中移除
+ * 若关闭最后一个标签页，自动创建新的默认标签页
+ */
+async function closeTab(tabId: string): Promise<void> {
+  const tabIndex = tabs.value.findIndex(tab => tab.id === tabId)
+  if (tabIndex === -1) return
+
+  const tab = tabs.value[tabIndex]
+
+  // 停止该目标的 Ping 会话并从 store 移除数据
+  if (tab.target) {
+    if (pingStore.isRunning(tab.target)) {
+      pingStore.setRunning(tab.target, false)
+      try {
+        await stopPing(tab.target)
+      } catch (e) {
+        console.error('停止 Ping 会话失败:', e)
+      }
+    }
+    pingStore.removeTarget(tab.target)
+  }
+
+  // 从 tabs 中移除
+  tabs.value.splice(tabIndex, 1)
+
+  // 若关闭的是最后一个标签页，自动创建新的默认标签页
+  if (tabs.value.length === 0) {
+    const defaultTab = createDefaultTab()
+    tabs.value.push(defaultTab)
+    activeTabId.value = defaultTab.id
+    return
+  }
+
+  // 若关闭的是当前活跃标签页，切换到相邻标签页
+  if (activeTabId.value === tabId) {
+    const newIndex = Math.min(tabIndex, tabs.value.length - 1)
+    activeTabId.value = tabs.value[newIndex].id
+  }
+}
+
+/**
+ * 切换活跃标签页
+ */
+function selectTab(tabId: string): void {
+  activeTabId.value = tabId
+}
+
+// ==================== 任务 5.3：Ping 操作处理方法 ====================
+
+/**
+ * 开始 Ping：更新当前标签页的 target 字段，调用 store 和后端启动 Ping
+ */
+async function handleStart(config: TargetConfig): Promise<void> {
+  // 更新当前标签页的 target 字段
+  const tab = activeTab.value
+  if (tab) {
+    tab.target = config.target
+  }
+
+  // 确保 store 中有该目标的数据
+  if (!pingStore.getConfig(config.target)) {
+    pingStore.addTarget(config)
+  }
+
+  pingStore.setRunning(config.target, true)
+  try {
+    await startPing(config)
+  } catch (e) {
+    // 启动失败，回退运行状态
+    pingStore.setRunning(config.target, false)
+    console.error('启动 Ping 失败:', e)
+  }
+}
+
+/**
+ * 停止 Ping
+ */
+function handleStop(target: string): void {
+  pingStore.setRunning(target, false)
+  stopPing(target)
+}
+
+/**
+ * 清除结果
+ */
+function handleClear(target: string): void {
+  pingStore.clearResults(target)
+}
+
+/**
+ * 全部停止：遍历所有运行中的目标，逐一停止 Ping 会话
+ */
+async function stopAllRunning(): Promise<void> {
+  const runningTabs = tabs.value.filter(
+    tab => tab.target && pingStore.isRunning(tab.target)
+  )
+
+  for (const tab of runningTabs) {
+    pingStore.setRunning(tab.target, false)
+    try {
+      await stopPing(tab.target)
+    } catch (e) {
+      console.error(`停止目标 ${tab.target} 的 Ping 会话失败:`, e)
+    }
+  }
+}
+
+// ==================== 任务 5.5：keep-alive 生命周期 ====================
+
+// 标记是否已初始化，避免重复创建默认标签页
+let initialized = false
+
+/**
+ * 初始化：创建默认标签页（仅在 tabs 为空时）
+ */
+function initializeTabs(): void {
+  if (tabs.value.length === 0) {
+    const defaultTab = createDefaultTab()
+    tabs.value.push(defaultTab)
+    activeTabId.value = defaultTab.id
+  }
+}
+
+// onMounted：首次挂载时初始化
 onMounted(() => {
-  if (!pingStore.getConfig(defaultTarget)) {
-    pingStore.addTarget({
-      target: defaultTarget,
-      interval_ms: settingsStore.settings.defaultPingInterval,
-      timeout_ms: settingsStore.settings.defaultPingTimeout,
-      count: null,
-      packet_size: 64
-    })
+  if (!initialized) {
+    initializeTabs()
+    initialized = true
   }
 })
 
-// Cleanup on unmount (page refresh or navigation)
-onUnmounted(async () => {
-  // Stop all active ping sessions
-  await stopAllPings()
-  // Reset store state
-  pingStore.resetStore()
-  console.log('PingView unmounted - all ping sessions stopped')
+// onActivated：从 keep-alive 缓存恢复时触发
+// 仅在 tabs 为空时创建默认标签页（正常情况下 keep-alive 会保留状态）
+onActivated(() => {
+  if (!initialized) {
+    initializeTabs()
+    initialized = true
+  }
 })
 
-// Listen to ping results
+// onDeactivated：离开页面时停止所有 Ping 会话并重置状态
+onDeactivated(async () => {
+  // 停止所有正在运行的 Ping 会话
+  await stopAllPings()
+
+  // 重置 store 状态
+  pingStore.resetStore()
+
+  // 清空标签页状态
+  tabs.value = []
+  activeTabId.value = ''
+  initialized = false
+
+  console.log('PingView deactivated - 所有 Ping 会话已停止')
+})
+
+// 监听 Ping 结果事件，按 target 路由到 store
 usePingListener(
   (result: PingResult) => {
     pingStore.addResult(result)
   }
 )
-
-async function handleStart(config: TargetConfig) {
-  target.value = config.target
-  if (!pingStore.getConfig(config.target)) {
-    pingStore.addTarget(config)
-  }
-  pingStore.setRunning(config.target, true)
-  try {
-    await startPing(config)
-  } catch (e) {
-    // startPing failed, revert running state
-    pingStore.setRunning(config.target, false)
-    console.error('Failed to start ping:', e)
-  }
-}
-
-function handleStop(t: string) {
-  pingStore.setRunning(t, false)
-  stopPing(t)
-}
-
-function handleClear(t: string) {
-  pingStore.clearResults(t)
-}
 </script>
 
 <template>
   <div class="ping-view">
     <div class="view-header">
-      <h2>Network Ping Monitor</h2>
-      <p class="subtitle">Real-time latency and packet loss monitoring</p>
+      <div class="header-row">
+        <div>
+          <h2>{{ $t('ping.title') }}</h2>
+          <p class="subtitle">{{ $t('ping.subtitle') }}</p>
+        </div>
+        <!-- 全部停止按钮，仅在有运行中的目标时显示 -->
+        <button
+          v-if="hasRunningTargets"
+          class="stop-all-btn"
+          @click="stopAllRunning"
+        >
+          {{ t('ping.stopAll') }}
+        </button>
+      </div>
     </div>
+
+    <!-- 任务 5.4：标签栏 -->
+    <PingTabBar
+      :tabs="tabs"
+      :active-tab-id="activeTabId"
+      @select="selectTab"
+      @add="addTab"
+      @close="closeTab"
+    />
 
     <div class="ping-content">
       <div class="ping-main">
         <PingConfig
-          :target="target"
-          :is-running="pingStore.isRunning(target)"
+          :target="activeTarget"
+          :is-running="pingStore.isRunning(activeTarget)"
           @start="handleStart"
           @stop="handleStop"
           @clear="handleClear"
         />
 
-        <PingChart :target="target" />
+        <PingChart :target="activeTarget" />
 
-        <PingStats :target="target" />
+        <PingStats :target="activeTarget" />
 
-        <PingTable :target="target" />
+        <PingTable :target="activeTarget" />
       </div>
     </div>
   </div>
@@ -119,6 +295,32 @@ function handleClear(t: string) {
     font-size: 12px;
     color: var(--text-muted);
     margin-top: 2px;
+  }
+}
+
+.header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+/* 全部停止按钮 */
+.stop-all-btn {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  background: var(--error-color, #f44336);
+  color: white;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+
+  &:hover {
+    background: var(--error-color-hover, #d32f2f);
+    box-shadow: 0 2px 8px rgba(244, 67, 54, 0.3);
   }
 }
 

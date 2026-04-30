@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "会话结束自动写日记",
+  "description": "每次 agent 执行结束后，自动将本次会话的关键内容写入 mempalace diary",
+  "version": "1",
+  "when": {
+    "type": "agentStop"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "判断本次会话是否涉及项目代码改动、架构决策、bug修复、功能开发等实质性项目工作。如果是，用 mempalace_diary_write 记录关键内容（agent_name 为 kiro，AAAK 压缩格式，包含日期、做了什么、关键决策）。如果本次会话只是闲聊、问答、概念解释等与项目无直接关系的内容，则跳过不写。"
+  }
+}

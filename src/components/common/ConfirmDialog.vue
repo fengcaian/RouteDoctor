@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
+
 defineProps<{
   visible: boolean
   title?: string
@@ -20,17 +24,17 @@ const emit = defineEmits<{
         <div class="dialog-box">
           <div class="dialog-header">
             <span class="dialog-icon">⚠️</span>
-            <span class="dialog-title">{{ title || '确认操作' }}</span>
+            <span class="dialog-title">{{ title || t('confirmDialog.defaultTitle') }}</span>
           </div>
           <div class="dialog-body">
             {{ message }}
           </div>
           <div class="dialog-footer">
             <button class="btn btn-cancel" @click="emit('cancel')">
-              {{ cancelText || '取消' }}
+              {{ cancelText || t('confirmDialog.cancel') }}
             </button>
             <button class="btn btn-confirm" @click="emit('confirm')">
-              {{ confirmText || '确认' }}
+              {{ confirmText || t('confirmDialog.confirm') }}
             </button>
           </div>
         </div>

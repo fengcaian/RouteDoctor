@@ -27,6 +27,21 @@ const router = createRouter({
       path: '/history',
       name: 'history',
       component: () => import('@/views/HistoryView.vue')
+    },
+    {
+      path: '/dns',
+      name: 'dns',
+      component: () => import('@/views/DnsView.vue')
+    },
+    {
+      path: '/network-info',
+      name: 'network-info',
+      component: () => import('@/views/NetworkInfoView.vue')
+    },
+    {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('@/views/SettingsView.vue')
     }
   ]
 })

@@ -1,24 +1,35 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores'
 
 const route = useRoute()
 const router = useRouter()
 const settingsStore = useSettingsStore()
+const { t, locale } = useI18n()
 
-const navItems = [
-  { path: '/ping', name: 'Ping', icon: '📡' },
-  { path: '/traceroute', name: 'Traceroute', icon: '🔗' },
-  { path: '/bandwidth', name: 'Bandwidth', icon: '⚡' },
-  { path: '/history', name: 'History', icon: '📊' }
-]
+const navItems = computed(() => [
+  { path: '/ping', name: t('nav.ping'), icon: '📡' },
+  { path: '/traceroute', name: t('nav.traceroute'), icon: '🔗' },
+  { path: '/bandwidth', name: t('nav.bandwidth'), icon: '⚡' },
+  { path: '/dns', name: t('nav.dns'), icon: '🔎' },
+  { path: '/network-info', name: t('nav.networkInfo'), icon: '🖥️' },
+  { path: '/history', name: t('nav.history'), icon: '📊' },
+  { path: '/settings', name: t('nav.settings'), icon: '⚙️' },
+])
 
 const currentTheme = computed(() => settingsStore.settings.theme)
 
 function toggleTheme() {
   const newTheme = currentTheme.value === 'dark' ? 'light' : 'dark'
   settingsStore.setTheme(newTheme)
+}
+
+function toggleLocale() {
+  const newLocale = locale.value === 'zh' ? 'en' : 'zh'
+  locale.value = newLocale
+  localStorage.setItem('locale', newLocale)
 }
 
 function isActive(path: string): boolean {
@@ -32,7 +43,7 @@ function goToHome() {
 
 <template>
   <aside class="sidebar">
-    <div class="sidebar-header" @click="goToHome" title="返回首页">
+    <div class="sidebar-header" @click="goToHome" :title="t('nav.backHome')">
       <h1 class="app-title">PingPlotter</h1>
       <span class="app-version">Next</span>
     </div>

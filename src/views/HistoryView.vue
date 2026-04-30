@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onActivated } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useHistoryStore, type HistorySession } from '@/stores/historyStore'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
+const { t } = useI18n()
 const historyStore = useHistoryStore()
 
 // Filter state
@@ -47,20 +49,20 @@ function getSummary(record: HistorySession): string {
     const data = record.data
     if (record.test_type === 'ping' && data.statistics) {
       const stats = data.statistics
-      return `${stats.sent} packets, ${stats.loss_rate}% loss, Avg ${stats.avg_ms.toFixed(1)}ms`
+      return `${stats.sent} ${t('history.packets')}, ${stats.loss_rate}% ${t('history.loss')}, Avg ${stats.avg_ms.toFixed(1)}ms`
     }
     if (record.test_type === 'bandwidth') {
-      return `Down: ${data.download_speed_mbps.toFixed(2)} Mbps, Up: ${data.upload_speed_mbps.toFixed(2)} Mbps`
+      return `${t('bandwidth.download')}: ${data.download_speed_mbps.toFixed(2)} Mbps, ${t('bandwidth.upload')}: ${data.upload_speed_mbps.toFixed(2)} Mbps`
     }
     if (record.test_type === 'traceroute') {
       const hops = data.hops?.length || 0
-      const completed = data.completed ? 'Completed' : 'Incomplete'
-      return `${hops} hops, ${completed}`
+      const completed = data.completed ? t('history.completed') : t('history.incomplete')
+      return `${hops} ${t('history.hops')}, ${completed}`
     }
   } catch (e) {
     console.error('Failed to parse summary:', e)
   }
-  return 'No summary available'
+  return '--'
 }
 
 // Get icon for test type
@@ -96,24 +98,24 @@ async function confirmClear() {
   <div class="history-view">
     <ConfirmDialog
       :visible="showClearConfirm"
-      title="清除历史记录"
-      message="是否清除所有历史记录？此操作不可撤销。"
-      confirmText="清除"
-      cancelText="取消"
+      :title="$t('history.clearConfirmTitle')"
+      :message="$t('history.clearConfirmMessage')"
+      :confirmText="$t('common.clear')"
+      :cancelText="$t('common.cancel')"
       @confirm="confirmClear"
       @cancel="showClearConfirm = false"
     />
     <div class="view-header">
       <div>
-        <h2>History</h2>
-        <p class="subtitle">View and export previous test results</p>
+        <h2>{{ $t('history.title') }}</h2>
+        <p class="subtitle">{{ $t('history.subtitle') }}</p>
       </div>
       <button
         class="clear-history-btn"
         @click="handleClearHistory"
         :disabled="historyStore.isLoading || historyStore.records.length === 0"
       >
-        清除历史
+        {{ $t('history.clearHistory') }}
       </button>
     </div>
 
@@ -123,7 +125,7 @@ async function confirmClear() {
         <input
           v-model="searchTarget"
           type="text"
-          placeholder="Search target..."
+          :placeholder="$t('history.searchPlaceholder')"
           class="search-input"
         />
       </div>
@@ -132,7 +134,7 @@ async function confirmClear() {
           :class="['filter-btn', { active: selectedType === 'all' }]"
           @click="selectedType = 'all'"
         >
-          All
+          {{ $t('history.all') }}
         </button>
         <button
           :class="['filter-btn', { active: selectedType === 'ping' }]"
@@ -154,13 +156,13 @@ async function confirmClear() {
         </button>
       </div>
       <button v-if="selectedType !== 'all' || searchTarget" class="clear-btn" @click="clearFilter">
-        Clear
+        {{ $t('common.clear') }}
       </button>
     </div>
 
     <!-- Loading state -->
     <div v-if="historyStore.isLoading" class="loading-state">
-      <p>Loading history...</p>
+      <p>{{ $t('history.loadingHistory') }}</p>
     </div>
 
     <!-- Error state -->
@@ -172,12 +174,12 @@ async function confirmClear() {
     <div v-else-if="filteredRecords.length === 0" class="empty-state">
       <div class="empty-icon">📋</div>
       <p v-if="historyStore.records.length === 0">
-        No history records yet.<br>
-        <span class="hint">Run a Ping, Traceroute, or Bandwidth test to create history.</span>
+        {{ $t('history.noRecords') }}<br>
+        <span class="hint">{{ $t('history.noRecordsHint') }}</span>
       </p>
       <p v-else>
-        No records match your filter.<br>
-        <span class="hint">Try adjusting your search or filter.</span>
+        {{ $t('history.noMatch') }}<br>
+        <span class="hint">{{ $t('history.noMatchHint') }}</span>
       </p>
     </div>
 

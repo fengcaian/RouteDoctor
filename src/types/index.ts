@@ -21,28 +21,34 @@ export interface PingStatistics {
   std_dev_ms: number     // standard deviation
 }
 
+// Ping 标签页（多目标同时 Ping）
+export interface PingTab {
+  id: string          // 唯一标识符（crypto.randomUUID() 生成）
+  target: string      // 目标地址（IP 或域名），新建时为空字符串
+}
+
 // Traceroute probe method
 export type ProbeMethod = 'icmp' | 'udp' | 'tcp'
 
-// Probe method descriptions
-export const PROBE_METHOD_INFO: Record<ProbeMethod, { name: string; description: string; pros: string[]; cons: string[] }> = {
+// Probe method descriptions - 使用 i18n key 引用
+export const PROBE_METHOD_INFO: Record<ProbeMethod, { name: string; descKey: string; prosKeys: string[]; consKeys: string[] }> = {
   icmp: {
     name: 'ICMP',
-    description: '使用ICMP Echo Request探测，兼容性最好',
-    pros: ['无需管理员权限', '兼容性最好', '速度快'],
-    cons: ['中间路由器可能不响应', '穿透率较低']
+    descKey: 'traceroute.probe.icmp.desc',
+    prosKeys: ['traceroute.probe.icmp.pro1', 'traceroute.probe.icmp.pro2', 'traceroute.probe.icmp.pro3'],
+    consKeys: ['traceroute.probe.icmp.con1', 'traceroute.probe.icmp.con2']
   },
   udp: {
     name: 'UDP',
-    description: '使用UDP数据包探测，能获取更多中间跳信息',
-    pros: ['穿透率较高', '信息量丰富', '类似专业工具'],
-    cons: ['需要管理员权限', '部分防火墙可能拦截']
+    descKey: 'traceroute.probe.udp.desc',
+    prosKeys: ['traceroute.probe.udp.pro1', 'traceroute.probe.udp.pro2', 'traceroute.probe.udp.pro3'],
+    consKeys: ['traceroute.probe.udp.con1', 'traceroute.probe.udp.con2']
   },
   tcp: {
     name: 'TCP',
-    description: '使用TCP SYN包探测，穿透性最强',
-    pros: ['穿透性最强', '可绕过部分防火墙'],
-    cons: ['需要管理员权限', '速度较慢', '需指定端口']
+    descKey: 'traceroute.probe.tcp.desc',
+    prosKeys: ['traceroute.probe.tcp.pro1', 'traceroute.probe.tcp.pro2'],
+    consKeys: ['traceroute.probe.tcp.con1', 'traceroute.probe.tcp.con2', 'traceroute.probe.tcp.con3']
   }
 }
 
@@ -119,4 +125,32 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultPingInterval: 1000,
   defaultPingTimeout: 3000,
   defaultTracerouteMaxHops: 30
+}
+
+// DNS 查询相关类型
+export interface DnsRecord {
+  record_type: string
+  value: string
+  ttl: number
+}
+
+export interface DnsQueryResult {
+  domain: string
+  records: DnsRecord[]
+  query_time_ms: number
+}
+
+// 网络信息类型
+export interface NetworkInterface {
+  name: string
+  ip: string
+  interface_type: string
+}
+
+export interface NetworkInfo {
+  local_ip: string | null
+  interfaces: NetworkInterface[]
+  default_gateway: string | null
+  dns_servers: string[]
+  hostname: string
 }

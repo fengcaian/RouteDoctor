@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { PingResult } from '@/types'
 import { usePingStore } from '@/stores'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   target: string
@@ -16,7 +19,7 @@ const results = computed<PingResult[]>(() => {
 })
 
 function formatLatency(result: PingResult): string {
-  if (result.is_timeout) return 'Timeout'
+  if (result.is_timeout) return t('ping.timeoutText')
   return `${result.latency_ms?.toFixed(1)} ms`
 }
 
@@ -35,10 +38,10 @@ function getStatusClass(result: PingResult): string {
     <table class="results-table">
       <thead>
         <tr>
-          <th>Seq</th>
-          <th>IP</th>
-          <th>Latency</th>
-          <th>Time</th>
+          <th>{{ t('ping.seq') }}</th>
+          <th>{{ t('ping.ip') }}</th>
+          <th>{{ t('ping.latency') }}</th>
+          <th>{{ t('ping.time') }}</th>
         </tr>
       </thead>
     </table>

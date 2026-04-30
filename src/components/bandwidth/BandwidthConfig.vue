@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { BandwidthProgress } from '@/types'
 import { useBandwidthStore } from '@/stores'
 
+const { t } = useI18n()
 const bandwidthStore = useBandwidthStore()
 
 const progress = computed<BandwidthProgress>(() => bandwidthStore.progress)
@@ -14,11 +16,11 @@ const progressPercent = computed(() => {
 const phaseText = computed(() => {
   switch (progress.value.phase) {
     case 'download':
-      return 'Testing download speed...'
+      return t('bandwidth.testingDownload')
     case 'upload':
-      return 'Testing upload speed...'
+      return t('bandwidth.testingUpload')
     default:
-      return 'Ready'
+      return t('common.ready')
   }
 })
 </script>
@@ -38,20 +40,20 @@ const phaseText = computed(() => {
         ></div>
       </div>
       <div class="bytes-info">
-        {{ (progress.bytes_transferred / 1024 / 1024).toFixed(1) }} MB transferred
+        {{ (progress.bytes_transferred / 1024 / 1024).toFixed(1) }} MB {{ t('bandwidth.transferred') }}
       </div>
     </div>
     <div class="last-result" v-else-if="bandwidthStore.lastResult">
       <div class="result-item download">
-        <span class="result-label">Download</span>
+        <span class="result-label">{{ t('bandwidth.download') }}</span>
         <span class="result-value">{{ bandwidthStore.lastResult.download_speed_mbps.toFixed(1) }} Mbps</span>
       </div>
       <div class="result-item upload">
-        <span class="result-label">Upload</span>
+        <span class="result-label">{{ t('bandwidth.upload') }}</span>
         <span class="result-value">{{ bandwidthStore.lastResult.upload_speed_mbps.toFixed(1) }} Mbps</span>
       </div>
       <div class="result-item latency">
-        <span class="result-label">Latency</span>
+        <span class="result-label">{{ t('bandwidth.latency') }}</span>
         <span class="result-value">{{ bandwidthStore.lastResult.latency_ms.toFixed(1) }} ms</span>
       </div>
     </div>
@@ -61,21 +63,21 @@ const phaseText = computed(() => {
         class="start-btn"
         @click="$emit('start')"
       >
-        Start Speed Test
+        {{ t('bandwidth.startTest') }}
       </button>
       <button
         v-else
         class="stop-btn"
         @click="$emit('stop')"
       >
-        Cancel
+        {{ t('bandwidth.cancelTest') }}
       </button>
       <button
         class="clear-btn"
         @click="$emit('clear')"
         :disabled="bandwidthStore.isRunning"
       >
-        Clear Data
+        {{ t('bandwidth.clearData') }}
       </button>
     </div>
   </div>

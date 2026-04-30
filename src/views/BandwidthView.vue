@@ -37,8 +37,8 @@ function handleClear() {
 <template>
   <div class="bandwidth-view">
     <div class="view-header">
-      <h2>Bandwidth Test</h2>
-      <p class="subtitle">Measure your network download and upload speed</p>
+      <h2>{{ $t('bandwidth.title') }}</h2>
+      <p class="subtitle">{{ $t('bandwidth.subtitle') }}</p>
     </div>
 
     <div class="bandwidth-content">
@@ -94,6 +94,7 @@ function handleClear() {
   display: flex;
   gap: 48px;
   justify-content: center;
+  align-items: center;
   width: 100%;
   flex: 1;
   min-height: 0;

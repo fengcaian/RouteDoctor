@@ -1,19 +1,30 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { usePingStore } from '@/stores'
 
+const { t } = useI18n()
 const pingStore = usePingStore()
 
 const runningCount = computed(() => pingStore.runningTargets.size)
 const statusText = computed(() => {
   if (runningCount.value === 0) {
-    return 'Ready'
+    return t('statusBar.ready')
   }
-  return `${runningCount.value} target(s) running`
+  return t('statusBar.targetsRunning', { count: runningCount.value })
 })
 
-const currentTime = computed(() => {
-  return new Date().toLocaleTimeString()
+const currentTime = ref(new Date().toLocaleTimeString())
+let timer: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  timer = setInterval(() => {
+    currentTime.value = new Date().toLocaleTimeString()
+  }, 1000)
+})
+
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
 })
 </script>
 

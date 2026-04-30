@@ -1,53 +1,72 @@
 <script setup lang="ts">
-// Dashboard view - shows quick overview of all features
+import { useI18n } from 'vue-i18n'
+const { t } = useI18n()
 </script>
 
 <template>
   <div class="dashboard-view">
     <div class="view-header">
-      <h2>Dashboard</h2>
-      <p class="subtitle">Network monitoring overview</p>
+      <h2>{{ t('dashboard.title') }}</h2>
+      <p class="subtitle">{{ t('dashboard.subtitle') }}</p>
     </div>
 
     <div class="dashboard-content">
       <div class="quick-actions">
         <router-link to="/ping" class="action-card ping">
           <span class="action-icon">📡</span>
-          <span class="action-title">Ping Monitor</span>
-          <span class="action-desc">Real-time latency tracking</span>
+          <span class="action-title">{{ t('dashboard.pingMonitor') }}</span>
+          <span class="action-desc">{{ t('dashboard.pingDesc') }}</span>
         </router-link>
 
         <router-link to="/traceroute" class="action-card trace">
           <span class="action-icon">🔗</span>
-          <span class="action-title">Traceroute</span>
-          <span class="action-desc">Network path discovery</span>
+          <span class="action-title">{{ t('dashboard.traceroute') }}</span>
+          <span class="action-desc">{{ t('dashboard.traceDesc') }}</span>
         </router-link>
 
         <router-link to="/bandwidth" class="action-card bandwidth">
           <span class="action-icon">⚡</span>
-          <span class="action-title">Bandwidth Test</span>
-          <span class="action-desc">Speed measurement</span>
+          <span class="action-title">{{ t('dashboard.bandwidthTest') }}</span>
+          <span class="action-desc">{{ t('dashboard.bandwidthDesc') }}</span>
+        </router-link>
+
+        <router-link to="/dns" class="action-card dns">
+          <span class="action-icon">🔍</span>
+          <span class="action-title">{{ t('dashboard.dnsLookup') }}</span>
+          <span class="action-desc">{{ t('dashboard.dnsDesc') }}</span>
+        </router-link>
+
+        <router-link to="/network-info" class="action-card network-info">
+          <span class="action-icon">🌐</span>
+          <span class="action-title">{{ t('dashboard.networkInfo') }}</span>
+          <span class="action-desc">{{ t('dashboard.networkInfoDesc') }}</span>
         </router-link>
 
         <router-link to="/history" class="action-card history">
           <span class="action-icon">📊</span>
-          <span class="action-title">History</span>
-          <span class="action-desc">View past results</span>
+          <span class="action-title">{{ t('dashboard.history') }}</span>
+          <span class="action-desc">{{ t('dashboard.historyDesc') }}</span>
         </router-link>
       </div>
 
       <div class="info-section">
-        <h3>Getting Started</h3>
-        <p>Welcome to PingPlotter Next! This tool helps you monitor and diagnose network issues.</p>
+        <h3>{{ t('dashboard.gettingStarted') }}</h3>
+        <p>{{ t('dashboard.welcome') }}</p>
         <div class="tips">
           <div class="tip">
-            <strong>Ping Monitor:</strong> Continuously monitor latency and packet loss to any target.
+            <strong>{{ t('dashboard.pingMonitor') }}:</strong> {{ t('dashboard.tipPing') }}
           </div>
           <div class="tip">
-            <strong>Traceroute:</strong> Discover the network path and identify bottlenecks.
+            <strong>{{ t('dashboard.traceroute') }}:</strong> {{ t('dashboard.tipTrace') }}
           </div>
           <div class="tip">
-            <strong>Bandwidth Test:</strong> Measure your download and upload speeds.
+            <strong>{{ t('dashboard.bandwidthTest') }}:</strong> {{ t('dashboard.tipBandwidth') }}
+          </div>
+          <div class="tip">
+            <strong>{{ t('dashboard.dnsLookup') }}:</strong> {{ t('dashboard.tipDns') }}
+          </div>
+          <div class="tip">
+            <strong>{{ t('dashboard.networkInfo') }}:</strong> {{ t('dashboard.tipNetworkInfo') }}
           </div>
         </div>
       </div>
@@ -59,52 +78,52 @@
 .dashboard-view {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 14px;
 }
 
 .view-header {
   h2 {
-    font-size: 24px;
+    font-size: 20px;
     font-weight: 700;
     color: var(--text-primary);
     margin: 0;
   }
 
   .subtitle {
-    font-size: 14px;
+    font-size: 12px;
     color: var(--text-muted);
-    margin-top: 4px;
+    margin-top: 2px;
   }
 }
 
 .dashboard-content {
   display: flex;
   flex-direction: column;
-  gap: 30px;
+  gap: 16px;
 }
 
 .quick-actions {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
 }
 
 .action-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
-  padding: 30px 20px;
+  gap: 6px;
+  padding: 16px 12px;
   background: var(--card-bg);
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px solid var(--border-color);
   text-decoration: none;
   transition: all 0.2s ease;
 
   &:hover {
-    transform: translateY(-4px);
+    transform: translateY(-2px);
     border-color: var(--accent-color);
-    box-shadow: 0 4px 12px var(--accent-color-alpha);
+    box-shadow: 0 2px 8px var(--accent-color-alpha);
   }
 
   &.ping {
@@ -130,54 +149,67 @@
       color: #9C27B0;
     }
   }
+
+  &.dns {
+    .action-icon {
+      color: #00BCD4;
+    }
+  }
+
+  &.network-info {
+    .action-icon {
+      color: #607D8B;
+    }
+  }
 }
 
 .action-icon {
-  font-size: 36px;
+  font-size: 28px;
 }
 
 .action-title {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .action-desc {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
 .info-section {
   background: var(--card-bg);
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px solid var(--border-color);
-  padding: 20px;
+  padding: 14px 16px;
 
   h3 {
-    font-size: 18px;
+    font-size: 15px;
     font-weight: 600;
     color: var(--text-primary);
-    margin-bottom: 10px;
+    margin-bottom: 8px;
   }
 
   p {
     color: var(--text-secondary);
-    margin-bottom: 16px;
+    margin-bottom: 10px;
+    font-size: 13px;
   }
 }
 
 .tips {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 
 .tip {
-  padding: 10px 16px;
+  padding: 7px 12px;
   background: var(--hover-bg);
-  border-radius: 8px;
+  border-radius: 6px;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 12px;
 
   strong {
     color: var(--text-primary);

@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useSettingsStore } from '@/stores'
 import type { ProbeMethod } from '@/types'
 import { PROBE_METHOD_INFO } from '@/types'
+
+const { t } = useI18n()
 
 const emit = defineEmits<{
   (e: 'start', config: { target: string, maxHops: number, timeoutMs: number, probeMethod: ProbeMethod }): void
@@ -60,7 +63,7 @@ function validateTarget(value: string): boolean {
   // 检查是否看起来像 IP 但实际无效
   const looksLikeIP = /^[\d.]+$/.test(trimmed)
   if (looksLikeIP) {
-    validationError.value = 'IP 地址格式无效，每段数值应在 0-255 之间'
+    validationError.value = t('validation.invalidIP')
     return false
   }
 
@@ -69,7 +72,7 @@ function validateTarget(value: string): boolean {
   const hasNumericParts = parts.some(p => /^\d+$/.test(p))
   const hasNonNumericParts = parts.some(p => !/^\d+$/.test(p))
   if (hasNumericParts && hasNonNumericParts) {
-    validationError.value = '地址格式无效，请输入正确的 IP 地址或域名'
+    validationError.value = t('validation.invalidFormat')
     return false
   }
 
@@ -89,20 +92,20 @@ function validateTarget(value: string): boolean {
 
   // 必须有至少两段
   if (parts.length < 2) {
-    validationError.value = '域名格式无效，请输入完整的域名（如 google.com）'
+    validationError.value = t('validation.invalidDomain')
     return false
   }
 
   // 检查总长度
   if (trimmed.length > 253) {
-    validationError.value = '域名长度超出限制'
+    validationError.value = t('validation.domainTooLong')
     return false
   }
 
   // 检查每段
   for (const label of parts) {
     if (!label || label.length > 63 || !labelRegex.test(label)) {
-      validationError.value = '域名格式无效，请输入有效的域名'
+      validationError.value = t('validation.invalidDomainLabel')
       return false
     }
   }
@@ -146,14 +149,14 @@ function onInputChange(value: string) {
   <div class="trace-config">
     <div class="config-row">
       <div class="config-field">
-        <label class="config-label">目标地址</label>
+        <label class="config-label">{{ t('common.target') }}</label>
         <div class="input-wrapper">
           <input
             v-model="targetInput"
             type="text"
             class="config-input"
             :class="{ 'input-error': validationError }"
-            placeholder="IP 或域名"
+            :placeholder="t('common.targetPlaceholder')"
             :disabled="isRunning"
             @input="onInputChange(targetInput)"
           />
@@ -169,7 +172,7 @@ function onInputChange(value: string) {
         <span v-if="validationError" class="error-text">{{ validationError }}</span>
       </div>
       <div class="config-field small">
-        <label class="config-label">最大跳数</label>
+        <label class="config-label">{{ t('traceroute.maxHops') }}</label>
         <input
           v-model.number="maxHops"
           type="number"
@@ -180,7 +183,7 @@ function onInputChange(value: string) {
         />
       </div>
       <div class="config-field small">
-        <label class="config-label">超时(ms)</label>
+        <label class="config-label">{{ t('traceroute.timeoutMs') }}</label>
         <input
           v-model.number="timeoutMs"
           type="number"
@@ -195,7 +198,7 @@ function onInputChange(value: string) {
 
     <div class="probe-method-section">
       <div class="probe-left">
-        <label class="config-label">探测方式</label>
+        <label class="config-label">{{ t('traceroute.probeMethod') }}</label>
         <div class="probe-methods">
           <label
             v-for="(info, method) in PROBE_METHOD_INFO"
@@ -214,15 +217,15 @@ function onInputChange(value: string) {
         </div>
       </div>
       <div class="method-info" v-if="selectedMethodInfo">
-        <p class="method-desc">{{ selectedMethodInfo.description }}</p>
+        <p class="method-desc">{{ t(selectedMethodInfo.descKey) }}</p>
         <div class="pros-cons">
           <div class="pros">
-            <span class="label">优点：</span>
-            <span v-for="pro in selectedMethodInfo.pros" :key="pro" class="tag success">{{ pro }}</span>
+            <span class="label">{{ t('traceroute.pros') }}</span>
+            <span v-for="key in selectedMethodInfo.prosKeys" :key="key" class="tag success">{{ t(key) }}</span>
           </div>
           <div class="cons">
-            <span class="label">缺点：</span>
-            <span v-for="con in selectedMethodInfo.cons" :key="con" class="tag warning">{{ con }}</span>
+            <span class="label">{{ t('traceroute.cons') }}</span>
+            <span v-for="key in selectedMethodInfo.consKeys" :key="key" class="tag warning">{{ t(key) }}</span>
           </div>
         </div>
       </div>
@@ -235,7 +238,7 @@ function onInputChange(value: string) {
         @click="handleStart"
         :disabled="!isValid"
       >
-        开始追踪
+        {{ t('traceroute.startTrace') }}
       </button>
       <button
         v-else
@@ -243,14 +246,14 @@ function onInputChange(value: string) {
         @click="handleStop"
       >
         <span class="btn-spinner"></span>
-        追踪中... 点击停止
+        {{ t('traceroute.tracing') }}
       </button>
       <button
         class="action-btn clear"
         @click="handleClear"
         :disabled="isRunning"
       >
-        清除数据
+        {{ t('traceroute.clearData') }}
       </button>
     </div>
   </div>
