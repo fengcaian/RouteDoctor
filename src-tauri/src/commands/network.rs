@@ -35,6 +35,18 @@ pub struct NetworkInfo {
     pub hostname: String,
 }
 
+/// 公网 IP 信息
+#[derive(Debug, Serialize)]
+pub struct PublicIpInfo {
+    pub ip: String,
+    pub city: Option<String>,
+    pub region: Option<String>,
+    pub country: Option<String>,
+    pub isp: Option<String>,
+    pub org: Option<String>,
+    pub timezone: Option<String>,
+}
+
 /// DNS 查询命令
 #[tauri::command]
 pub async fn dns_lookup(domain: String, record_type: String) -> AppResult<DnsQueryResult> {
@@ -380,4 +392,71 @@ async fn get_dns_servers() -> Vec<String> {
 
     servers.dedup();
     servers
+}
+
+/// 获取公网 IP 信息命令
+#[tauri::command]
+pub async fn get_public_ip_info() -> AppResult<PublicIpInfo> {
+    use serde::Deserialize;
+
+    // 使用 ipinfo.io 获取公网 IP 信息
+    #[derive(Deserialize)]
+    struct IpInfoResponse {
+        ip: Option<String>,
+        city: Option<String>,
+        region: Option<String>,
+        country: Option<String>,
+        org: Option<String>,
+        timezone: Option<String>,
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| AppError::Network(format!("创建 HTTP 客户端失败: {}", e)))?;
+
+    let resp = client
+        .get("https://ipinfo.io/json")
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| AppError::Network(format!("请求公网 IP 信息失败: {}", e)))?;
+
+    if !resp.status().is_success() {
+        return Err(AppError::Network(format!(
+            "获取公网 IP 信息失败，状态码: {}",
+            resp.status()
+        )));
+    }
+
+    let info: IpInfoResponse = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Network(format!("解析公网 IP 信息失败: {}", e)))?;
+
+    // org 字段通常格式为 "AS12345 ISP Name"，拆分出 ISP 名称
+    let (isp, org) = if let Some(ref org_str) = info.org {
+        if org_str.starts_with("AS") {
+            let parts: Vec<&str> = org_str.splitn(2, ' ').collect();
+            if parts.len() == 2 {
+                (Some(parts[1].to_string()), Some(org_str.clone()))
+            } else {
+                (None, Some(org_str.clone()))
+            }
+        } else {
+            (Some(org_str.clone()), Some(org_str.clone()))
+        }
+    } else {
+        (None, None)
+    };
+
+    Ok(PublicIpInfo {
+        ip: info.ip.unwrap_or_else(|| "未知".to_string()),
+        city: info.city,
+        region: info.region,
+        country: info.country,
+        isp,
+        org,
+        timezone: info.timezone,
+    })
 }

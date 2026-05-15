@@ -35,6 +35,10 @@ pub enum AppError {
     #[serde(rename = "cancelled")]
     Cancelled,
 
+    #[error("Network error: {0}")]
+    #[serde(rename = "network_error")]
+    Network(String),
+
     #[error("Internal error: {0}")]
     #[serde(rename = "internal_error")]
     Internal(String),

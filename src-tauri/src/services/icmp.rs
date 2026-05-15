@@ -105,7 +105,7 @@ pub async fn stop_ping(app_handle: &tauri::AppHandle, target: &str) -> AppResult
 
 /// Stop all active ping sessions
 pub async fn stop_all_pings(app_handle: &tauri::AppHandle) -> AppResult<()> {
-    let mut sessions = PING_SESSIONS.write().await;
+    let sessions = PING_SESSIONS.write().await;
     let sessions_copy: Vec<_> = sessions.iter().map(|(t, i)| (t.clone(), i.session_id, i.stop_tx.clone(), i.results.clone())).collect();
     drop(sessions);
 

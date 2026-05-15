@@ -7,7 +7,7 @@ import { useSettingsStore } from '@/stores'
 const route = useRoute()
 const router = useRouter()
 const settingsStore = useSettingsStore()
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 const navItems = computed(() => [
   { path: '/ping', name: t('nav.ping'), icon: '📡' },
@@ -26,11 +26,6 @@ function toggleTheme() {
   settingsStore.setTheme(newTheme)
 }
 
-function toggleLocale() {
-  const newLocale = locale.value === 'zh' ? 'en' : 'zh'
-  locale.value = newLocale
-  localStorage.setItem('locale', newLocale)
-}
 
 function isActive(path: string): boolean {
   return route.path === path

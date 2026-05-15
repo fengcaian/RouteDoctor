@@ -154,3 +154,13 @@ export interface NetworkInfo {
   dns_servers: string[]
   hostname: string
 }
+
+export interface PublicIpInfo {
+  ip: string
+  city: string | null
+  region: string | null
+  country: string | null
+  isp: string | null
+  org: string | null
+  timezone: string | null
+}

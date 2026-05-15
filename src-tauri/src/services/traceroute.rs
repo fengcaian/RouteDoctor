@@ -257,7 +257,7 @@ async fn run_tcp_traceroute(
         let (target_host, target_port) = parse_target_with_port(&config.target);
         let target_with_port = format!("{}:{}", target_host, target_port);
 
-        let mut args = vec![
+        let args = vec![
             target_with_port,
             "-m".to_string(), config.max_hops.to_string(),
             "-t".to_string(), config.timeout_ms.to_string(),

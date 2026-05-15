@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "回答时间戳",
+  "description": "在每次提问时自动获取当前时间，输出会作为上下文传给 agent",
+  "version": "1",
+  "when": {
+    "type": "promptSubmit"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "powershell -Command \"Write-Output ('当前时间: ' + (Get-Date -Format 'yyyy-MM-dd HH:mm'))\""
+  }
+}

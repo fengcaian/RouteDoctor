@@ -6,13 +6,12 @@ import PingChart from '@/components/ping/PingChart.vue'
 import PingStats from '@/components/ping/PingStats.vue'
 import PingConfig from '@/components/ping/PingConfig.vue'
 import PingTable from '@/components/ping/PingTable.vue'
-import { usePingStore, useSettingsStore } from '@/stores'
+import { usePingStore } from '@/stores'
 import { usePing, usePingListener, stopAllPings } from '@/composables'
 import type { TargetConfig, PingResult, PingTab } from '@/types'
 
 const { t } = useI18n()
 const pingStore = usePingStore()
-const settingsStore = useSettingsStore()
 const { startPing, stopPing } = usePing()
 
 // ==================== 任务 5.1：内部状态管理 ====================

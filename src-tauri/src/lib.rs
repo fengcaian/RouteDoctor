@@ -62,6 +62,7 @@ pub fn run() {
             commands::history::clear_history,
             commands::network::dns_lookup,
             commands::network::get_network_info,
+            commands::network::get_public_ip_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
