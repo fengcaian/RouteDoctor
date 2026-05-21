@@ -12,6 +12,8 @@ const props = defineProps<{
 
 const pingStore = usePingStore()
 
+const totalCount = computed(() => pingStore.getResults(props.target).length)
+
 const results = computed<PingResult[]>(() => {
   const all = pingStore.getResults(props.target)
   // Show last 50 results
@@ -35,6 +37,9 @@ function getStatusClass(result: PingResult): string {
 
 <template>
   <div class="ping-table">
+    <div v-if="totalCount > 50" class="truncation-hint">
+      {{ t('ping.showingLatest', { shown: 50, total: totalCount }) }}
+    </div>
     <table class="results-table">
       <thead>
         <tr>
@@ -68,6 +73,19 @@ function getStatusClass(result: PingResult): string {
   max-height: 400px;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.truncation-hint {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--hover-bg);
+  border-bottom: 1px solid var(--border-color);
+  text-align: center;
+  flex-shrink: 0;
+  border-radius: 12px 12px 0 0;
 }
 
 .table-body-wrapper {

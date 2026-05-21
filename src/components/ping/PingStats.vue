@@ -83,6 +83,7 @@ const avgColor = computed(() => {
   background: var(--card-bg);
   border-radius: 12px;
   border: 1px solid var(--border-color);
+  min-width: 0;
 }
 
 .stat-item {

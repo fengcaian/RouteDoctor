@@ -59,8 +59,29 @@ onMounted(() => {
       </button>
     </div>
 
-    <div v-if="isLoading && !networkInfo" class="loading-state">
-      <p>{{ t('networkInfo.loading') }}</p>
+    <div v-if="isLoading && !networkInfo" class="loading-skeleton">
+      <!-- 骨架屏：模拟真实布局 -->
+      <div class="skeleton-cards">
+        <div class="skeleton-card" v-for="i in 3" :key="i">
+          <div class="skeleton-icon"></div>
+          <div class="skeleton-text-group">
+            <div class="skeleton-line short"></div>
+            <div class="skeleton-line medium"></div>
+          </div>
+        </div>
+      </div>
+      <div class="skeleton-section">
+        <div class="skeleton-line short"></div>
+        <div class="skeleton-grid">
+          <div class="skeleton-block" v-for="i in 4" :key="i"></div>
+        </div>
+      </div>
+      <div class="skeleton-section">
+        <div class="skeleton-line short"></div>
+        <div class="skeleton-tags">
+          <div class="skeleton-tag" v-for="i in 3" :key="i"></div>
+        </div>
+      </div>
     </div>
 
     <div v-else-if="error" class="error-state">
@@ -224,13 +245,92 @@ onMounted(() => {
   }
 }
 
-.loading-state {
+.loading-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.skeleton-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.skeleton-card {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 12px;
+  padding: 16px;
+  background: var(--card-bg);
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+}
+
+.skeleton-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--hover-bg);
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+.skeleton-text-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   flex: 1;
-  color: var(--text-muted);
-  font-size: 13px;
+}
+
+.skeleton-line {
+  height: 12px;
+  border-radius: 6px;
+  background: var(--hover-bg);
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+
+  &.short { width: 60%; }
+  &.medium { width: 80%; }
+}
+
+.skeleton-section {
+  background: var(--card-bg);
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.skeleton-block {
+  height: 56px;
+  border-radius: 8px;
+  background: var(--hover-bg);
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+.skeleton-tags {
+  display: flex;
+  gap: 8px;
+}
+
+.skeleton-tag {
+  width: 100px;
+  height: 32px;
+  border-radius: 6px;
+  background: var(--hover-bg);
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
 }
 
 .error-state {

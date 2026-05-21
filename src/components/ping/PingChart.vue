@@ -378,6 +378,8 @@ onUnmounted(() => {
   padding: 12px;
   border: 1px solid var(--border-color);
   position: relative;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .empty-chart {

@@ -3,3 +3,4 @@ pub mod traceroute;
 pub mod bandwidth;
 pub mod history;
 pub mod network;
+pub mod continuous_trace;

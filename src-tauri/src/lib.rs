@@ -55,6 +55,8 @@ pub fn run() {
             commands::ping::ping_once,
             commands::traceroute::run_traceroute,
             commands::traceroute::stop_traceroute,
+            commands::continuous_trace::start_continuous_trace,
+            commands::continuous_trace::stop_continuous_trace,
             commands::bandwidth::start_bandwidth_test,
             commands::bandwidth::stop_bandwidth_test,
             commands::history::get_history,

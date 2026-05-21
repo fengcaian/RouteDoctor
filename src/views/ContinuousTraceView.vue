@@ -21,8 +21,6 @@ const { startContinuousTrace, stopContinuousTrace } = useContinuousTrace()
 const targetInput = ref('google.com')
 const pingInterval = ref(2000)
 const maxHops = ref(30)
-const timeoutMs = ref(3000)
-const probeMethod = ref<'icmp' | 'udp' | 'tcp'>('icmp')
 
 // 监听事件
 useContinuousTraceListener(
@@ -42,11 +40,149 @@ useContinuousTraceListener(
   }
 )
 
+// 热力图配置
+const heatmapOption = computed(() => {
+  const { times, hops, data } = store.getHeatmapData()
+
+  if (data.length === 0) {
+    return { series: [] }
+  }
+
+  // 动态计算 visualMap 的 max 值：取实际数据的 P95 或最大值的 1.2 倍
+  const validValues = data
+    .map(d => d[2])
+    .filter((v): v is number => v !== null && v > 0)
+    .sort((a, b) => a - b)
+
+  let dynamicMax = 50 // 最小 50ms
+  if (validValues.length > 0) {
+    // 取 P95 值，避免极端值拉伸色阶
+    const p95Index = Math.floor(validValues.length * 0.95)
+    const p95Value = validValues[p95Index] || validValues[validValues.length - 1]
+    dynamicMax = Math.max(dynamicMax, Math.ceil(p95Value * 1.3))
+  }
+
+  return {
+    backgroundColor: 'transparent',
+    tooltip: {
+      position: 'top',
+      backgroundColor: 'rgba(30, 30, 30, 0.95)',
+      borderColor: '#555',
+      textStyle: { color: '#fff', fontSize: 12 },
+      formatter: (params: any) => {
+        const value = params.value[2]
+        const hopLabel = hops[params.value[1]] || ''
+        const time = times[params.value[0]] || ''
+        if (value === null || value === -1) {
+          return `${hopLabel}<br/>${time}<br/>超时`
+        }
+        return `${hopLabel}<br/>${time}<br/>延迟: ${value.toFixed(1)} ms`
+      }
+    },
+    grid: {
+      left: 160,
+      right: 60,
+      top: 10,
+      bottom: 60
+    },
+    xAxis: {
+      type: 'category',
+      data: times,
+      splitArea: { show: false },
+      axisLabel: {
+        color: '#888',
+        fontSize: 9,
+        interval: Math.max(0, Math.floor(times.length / 8) - 1),
+        rotate: 45
+      },
+      axisLine: { lineStyle: { color: '#444' } }
+    },
+    yAxis: {
+      type: 'category',
+      data: hops,
+      splitArea: { show: false },
+      axisLabel: {
+        color: '#888',
+        fontSize: 10,
+        width: 140,
+        overflow: 'truncate'
+      },
+      axisLine: { lineStyle: { color: '#444' } }
+    },
+    dataZoom: [
+      {
+        type: 'slider',
+        xAxisIndex: 0,
+        bottom: 5,
+        height: 16,
+        start: Math.max(0, 100 - (30 / Math.max(times.length, 1)) * 100),
+        end: 100,
+        borderColor: '#555',
+        fillerColor: 'rgba(76, 175, 80, 0.15)',
+        handleStyle: { color: '#4CAF50', borderColor: '#4CAF50' },
+        textStyle: { color: '#888', fontSize: 9 },
+        show: times.length > 30
+      },
+      {
+        type: 'inside',
+        xAxisIndex: 0,
+        zoomOnMouseWheel: 'shift',
+        moveOnMouseWheel: true
+      }
+    ],
+    visualMap: {
+      min: 0,
+      max: dynamicMax,
+      calculable: true,
+      orient: 'vertical',
+      right: 0,
+      top: 'center',
+      itemHeight: 120,
+      textStyle: { color: '#888' },
+      inRange: {
+        color: ['#2196F3', '#4CAF50', '#8BC34A', '#FFEB3B', '#FF9800', '#f44336']
+      },
+      formatter: (value: number) => `${Math.round(value)}ms`
+    },
+    series: [{
+      name: 'Latency',
+      type: 'heatmap',
+      data: data.map(d => [d[0], d[1], d[2] === null ? -1 : d[2]]),
+      label: { show: false },
+      emphasis: {
+        itemStyle: {
+          shadowBlur: 10,
+          shadowColor: 'rgba(0, 0, 0, 0.5)'
+        }
+      },
+      itemStyle: {
+        borderWidth: 1,
+        borderColor: 'rgba(0,0,0,0.1)'
+      }
+    }]
+  }
+})
+
+// 每跳统计表格数据
+const hopStats = computed(() => {
+  return store.hops
+    .filter(h => h.ip)
+    .map(h => ({
+      ...h,
+      stats: store.getHopStats(h.hop_number)
+    }))
+})
+
 async function handleStart() {
   if (!targetInput.value.trim()) return
   store.startMonitoring(targetInput.value.trim())
   try {
-    await startContinuousTrace(targetInput.value.trim(), maxHops.value, timeoutMs.value, pingInterval.value, probeMethod.value)
+    await startContinuousTrace(
+      targetInput.value.trim(),
+      maxHops.value,
+      3000,
+      pingInterval.value
+    )
   } catch (e: any) {
     toast.error(`启动失败: ${typeof e === 'string' ? e : e.message || '未知错误'}`)
     store.stopMonitoring()
@@ -61,123 +197,14 @@ async function handleStop() {
   }
   store.stopMonitoring()
 }
-
-function handleClear() {
-  store.resetStore()
-}
-
-// 热力图配置
-const heatmapOption = computed(() => {
-  const { times, hops, data } = store.getHeatmapData()
-  if (data.length === 0) return { series: [] }
-
-  const validValues = data
-    .map(d => d[2])
-    .filter((v): v is number => v !== null && v > 0)
-    .sort((a, b) => a - b)
-
-  let dynamicMax = 50
-  if (validValues.length > 0) {
-    const p95Index = Math.floor(validValues.length * 0.95)
-    dynamicMax = Math.max(dynamicMax, Math.ceil((validValues[p95Index] || validValues[validValues.length - 1]) * 1.3))
-  }
-
-  return {
-    backgroundColor: 'transparent',
-    tooltip: {
-      position: 'top',
-      backgroundColor: 'rgba(30, 30, 30, 0.95)',
-      borderColor: '#555',
-      textStyle: { color: '#fff', fontSize: 12 },
-      formatter: (params: any) => {
-        const value = params.value[2]
-        const hopLabel = hops[params.value[1]] || ''
-        const time = times[params.value[0]] || ''
-        if (value === null || value === -1) return `${hopLabel}<br/>${time}<br/>超时`
-        return `${hopLabel}<br/>${time}<br/>延迟: ${value.toFixed(1)} ms`
-      }
-    },
-    grid: { left: 160, right: 60, top: 10, bottom: 60 },
-    xAxis: {
-      type: 'category',
-      data: times,
-      splitArea: { show: false },
-      axisLabel: { color: '#888', fontSize: 9, interval: Math.max(0, Math.floor(times.length / 8) - 1), rotate: 45 },
-      axisLine: { lineStyle: { color: '#444' } }
-    },
-    yAxis: {
-      type: 'category',
-      data: hops,
-      splitArea: { show: false },
-      axisLabel: { color: '#888', fontSize: 10, width: 140, overflow: 'truncate' },
-      axisLine: { lineStyle: { color: '#444' } }
-    },
-    dataZoom: [
-      {
-        type: 'slider', xAxisIndex: 0, bottom: 5, height: 16,
-        start: Math.max(0, 100 - (30 / Math.max(times.length, 1)) * 100), end: 100,
-        borderColor: '#555', fillerColor: 'rgba(76, 175, 80, 0.15)',
-        handleStyle: { color: '#4CAF50', borderColor: '#4CAF50' },
-        textStyle: { color: '#888', fontSize: 9 }, show: times.length > 30
-      },
-      { type: 'inside', xAxisIndex: 0, zoomOnMouseWheel: 'shift', moveOnMouseWheel: true }
-    ],
-    visualMap: {
-      min: 0, max: dynamicMax, calculable: true, orient: 'vertical',
-      right: 0, top: 'center', itemHeight: 120, textStyle: { color: '#888' },
-      inRange: { color: ['#2196F3', '#4CAF50', '#8BC34A', '#FFEB3B', '#FF9800', '#f44336'] },
-      formatter: (value: number) => `${Math.round(value)}ms`
-    },
-    series: [{
-      name: 'Latency', type: 'heatmap',
-      data: data.map(d => [d[0], d[1], d[2] === null ? -1 : d[2]]),
-      label: { show: false },
-      emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0, 0, 0, 0.5)' } },
-      itemStyle: { borderWidth: 1, borderColor: 'rgba(0,0,0,0.1)' }
-    }]
-  }
-})
-
-// 每跳统计：显示所有跳（包括无响应的），保持序号连续
-const hopStats = computed(() => {
-  if (store.hops.length === 0) return []
-
-  // 找到最大跳数
-  const maxHop = Math.max(...store.hops.map(h => h.hop_number))
-
-  // 生成连续的跳列表
-  const result = []
-  for (let i = 1; i <= maxHop; i++) {
-    const hop = store.hops.find(h => h.hop_number === i)
-    if (hop && hop.ip) {
-      result.push({ ...hop, stats: store.getHopStats(i) })
-    } else {
-      // 无响应的跳
-      result.push({
-        hop_number: i,
-        ip: null,
-        hostname: null,
-        stats: { avg: 0, min: 0, max: 0, loss: 100, count: 0 }
-      })
-    }
-  }
-  return result
-})
-
-function getLatencyClass(avg: number): string {
-  if (avg === 0) return ''
-  if (avg < 50) return 'good'
-  if (avg < 100) return 'medium'
-  return 'bad'
-}
 </script>
 
 <template>
-  <div class="traceroute-view">
+  <div class="continuous-trace-view">
     <div class="view-header">
       <div>
-        <h2>{{ $t('traceroute.title') }}</h2>
-        <p class="subtitle">{{ $t('traceroute.subtitle') }}</p>
+        <h2>{{ t('continuousTrace.title') }}</h2>
+        <p class="subtitle">{{ t('continuousTrace.subtitle') }}</p>
       </div>
     </div>
 
@@ -201,7 +228,9 @@ function getLatencyClass(avg: number): string {
             v-model.number="pingInterval"
             type="number"
             class="config-input"
-            min="1000" max="10000" step="500"
+            min="1000"
+            max="10000"
+            step="500"
             :disabled="store.isRunning"
           />
         </div>
@@ -211,58 +240,33 @@ function getLatencyClass(avg: number): string {
             v-model.number="maxHops"
             type="number"
             class="config-input"
-            min="5" max="64"
+            min="5"
+            max="64"
             :disabled="store.isRunning"
           />
         </div>
-        <div class="config-field">
-          <label class="config-label">{{ t('traceroute.timeoutMs') }}</label>
-          <input
-            v-model.number="timeoutMs"
-            type="number"
-            class="config-input"
-            min="1000" max="10000" step="500"
-            :disabled="store.isRunning"
-          />
+        <div class="config-field action-field">
+          <label class="config-label">&nbsp;</label>
+          <button
+            v-if="!store.isRunning"
+            class="start-btn"
+            @click="handleStart"
+            :disabled="!targetInput.trim()"
+          >
+            {{ t('continuousTrace.start') }}
+          </button>
+          <button
+            v-else
+            class="stop-btn"
+            @click="handleStop"
+          >
+            {{ t('continuousTrace.stop') }}
+          </button>
         </div>
-        <div class="config-field">
-          <label class="config-label">{{ t('traceroute.probeMethod') }}</label>
-          <div class="probe-selector">
-            <button
-              v-for="method in ['icmp', 'udp', 'tcp'] as const"
-              :key="method"
-              :class="['probe-btn', { active: probeMethod === method }]"
-              :disabled="store.isRunning"
-              @click="probeMethod = method"
-            >
-              {{ method.toUpperCase() }}
-            </button>
-          </div>
-        </div>
-      </div>
-      <div class="config-actions">
-        <button
-          v-if="!store.isRunning"
-          class="start-btn"
-          @click="handleStart"
-          :disabled="!targetInput.trim()"
-        >
-          {{ t('continuousTrace.start') }}
-        </button>
-        <button v-else class="stop-btn" @click="handleStop">
-          {{ t('continuousTrace.stop') }}
-        </button>
-        <button
-          class="clear-btn"
-          @click="handleClear"
-          :disabled="store.isRunning"
-        >
-          {{ t('traceroute.clearData') }}
-        </button>
       </div>
     </div>
 
-    <!-- 发现中 -->
+    <!-- 发现中状态 -->
     <div v-if="store.isDiscovering" class="discovering-state">
       <div class="discovering-spinner"></div>
       <span>{{ t('continuousTrace.discovering') }}</span>
@@ -272,11 +276,15 @@ function getLatencyClass(avg: number): string {
     <div v-if="store.hops.length > 0" class="heatmap-section">
       <h3 class="section-title">{{ t('continuousTrace.heatmapTitle') }}</h3>
       <div class="heatmap-container">
-        <v-chart :option="heatmapOption" :autoresize="true" style="width: 100%; height: 100%" />
+        <v-chart
+          :option="heatmapOption"
+          :autoresize="true"
+          style="width: 100%; height: 100%"
+        />
       </div>
     </div>
 
-    <!-- 每跳统计 -->
+    <!-- 每跳统计表格 -->
     <div v-if="hopStats.length > 0" class="stats-section">
       <h3 class="section-title">{{ t('continuousTrace.statsTitle') }}</h3>
       <table class="stats-table">
@@ -292,14 +300,14 @@ function getLatencyClass(avg: number): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="hop in hopStats" :key="hop.hop_number" :class="{ 'no-response': !hop.ip }">
+          <tr v-for="hop in hopStats" :key="hop.hop_number">
             <td>{{ hop.hop_number }}</td>
-            <td class="mono">{{ hop.ip || '* * *' }}</td>
+            <td class="mono">{{ hop.ip }}</td>
             <td :class="getLatencyClass(hop.stats.avg)">{{ hop.stats.avg > 0 ? `${hop.stats.avg.toFixed(1)} ms` : '--' }}</td>
             <td>{{ hop.stats.min > 0 ? `${hop.stats.min.toFixed(1)} ms` : '--' }}</td>
             <td>{{ hop.stats.max > 0 ? `${hop.stats.max.toFixed(1)} ms` : '--' }}</td>
-            <td :class="{ 'loss-high': hop.ip && hop.stats.loss > 5 }">{{ hop.ip ? `${hop.stats.loss.toFixed(1)}%` : '--' }}</td>
-            <td class="muted">{{ hop.stats.count || '--' }}</td>
+            <td :class="{ 'loss-high': hop.stats.loss > 5 }">{{ hop.stats.loss.toFixed(1) }}%</td>
+            <td class="muted">{{ hop.stats.count }}</td>
           </tr>
         </tbody>
       </table>
@@ -313,11 +321,20 @@ function getLatencyClass(avg: number): string {
   </div>
 </template>
 
+<script lang="ts">
+function getLatencyClass(avg: number): string {
+  if (avg === 0) return ''
+  if (avg < 50) return 'good'
+  if (avg < 100) return 'medium'
+  return 'bad'
+}
+</script>
+
 <style lang="scss" scoped>
-.traceroute-view {
+.continuous-trace-view {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
@@ -343,14 +360,12 @@ function getLatencyClass(avg: number): string {
   border-radius: 12px;
   border: 1px solid var(--border-color);
   padding: 12px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 }
 
 .config-row {
   display: flex;
   gap: 12px;
+  align-items: flex-end;
   flex-wrap: wrap;
 }
 
@@ -358,9 +373,9 @@ function getLatencyClass(avg: number): string {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 100px;
 
   &.target-field { flex: 1; min-width: 200px; }
+  &.action-field { width: auto; }
 }
 
 .config-label {
@@ -377,45 +392,13 @@ function getLatencyClass(avg: number): string {
   color: var(--text-primary);
   font-size: 13px;
 
-  &:focus { outline: none; border-color: var(--accent-color); }
-  &:disabled { opacity: 0.6; }
-}
-
-.config-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.probe-selector {
-  display: flex;
-  gap: 4px;
-}
-
-.probe-btn {
-  padding: 6px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--input-bg);
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-
-  &:hover:not(:disabled) {
+  &:focus {
+    outline: none;
     border-color: var(--accent-color);
-    color: var(--text-primary);
-  }
-
-  &.active {
-    background: var(--accent-color);
-    border-color: var(--accent-color);
-    color: white;
   }
 
   &:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+    opacity: 0.6;
   }
 }
 
@@ -447,20 +430,6 @@ function getLatencyClass(avg: number): string {
   &:hover { background: var(--error-color-hover); }
 }
 
-.clear-btn {
-  padding: 8px 16px;
-  background: var(--button-bg);
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.2s;
-
-  &:hover:not(:disabled) { background: var(--hover-bg); }
-  &:disabled { opacity: 0.5; cursor: not-allowed; }
-}
-
 .discovering-state {
   display: flex;
   align-items: center;
@@ -482,7 +451,9 @@ function getLatencyClass(avg: number): string {
   }
 }
 
-@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 
 .section-title {
   font-size: 14px;
@@ -539,12 +510,6 @@ function getLatencyClass(avg: number): string {
   }
 
   tr:hover td { background: var(--hover-bg); }
-
-  tr.no-response {
-    opacity: 0.5;
-
-    td { color: var(--text-muted); }
-  }
 }
 
 .empty-state {

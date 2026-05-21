@@ -2,7 +2,9 @@
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { TargetConfig } from '@/types'
-import { useSettingsStore } from '@/stores'
+import { useSettingsStore, usePingStore } from '@/stores'
+import { useFavoritesStore } from '@/stores/favoritesStore'
+import { useExport } from '@/composables/useExport'
 
 const { t } = useI18n()
 
@@ -18,6 +20,9 @@ const props = defineProps<{
 }>()
 
 const settingsStore = useSettingsStore()
+const pingStore = usePingStore()
+const favoritesStore = useFavoritesStore()
+const { exportPingCSV } = useExport()
 
 const intervalMs = ref(settingsStore.settings.defaultPingInterval)
 const timeoutMs = ref(settingsStore.settings.defaultPingTimeout)
@@ -170,6 +175,29 @@ function handleClear() {
   emit('clear', props.target)
 }
 
+// 收藏目标
+const isFav = computed(() => favoritesStore.isFavorite(targetInput.value?.trim() || ''))
+
+function toggleFavorite() {
+  const target = targetInput.value?.trim()
+  if (!target) return
+  if (isFav.value) {
+    const fav = favoritesStore.getFavoriteByTarget(target)
+    if (fav) favoritesStore.removeFavorite(fav.id)
+  } else {
+    favoritesStore.addFavorite(target, target, 'ping')
+  }
+}
+
+// 导出当前目标的 Ping 数据
+function handleExport() {
+  const target = props.target
+  if (!target) return
+  const results = pingStore.getResults(target)
+  if (results.length === 0) return
+  exportPingCSV(target, results)
+}
+
 function onInputChange(value: string) {
   if (value) {
     validateTarget(value)
@@ -193,6 +221,7 @@ function onInputChange(value: string) {
             :placeholder="t('common.targetPlaceholder')"
             :disabled="isRunning"
             @input="onInputChange(targetInput)"
+            @keyup.enter="handleStart"
           />
           <button
             v-if="targetInput && !isRunning"
@@ -264,6 +293,23 @@ function onInputChange(value: string) {
       >
         {{ t('ping.clearResults') }}
       </button>
+      <button
+        class="action-btn fav"
+        :class="{ active: isFav }"
+        @click="toggleFavorite"
+        :disabled="!targetInput?.trim()"
+        :title="isFav ? t('ping.removeFav') : t('ping.addFav')"
+      >
+        {{ isFav ? '★' : '☆' }}
+      </button>
+      <button
+        class="action-btn export"
+        @click="handleExport"
+        :disabled="!target"
+        :title="t('ping.exportData')"
+      >
+        ⬇
+      </button>
     </div>
   </div>
 </template>
@@ -277,6 +323,7 @@ function onInputChange(value: string) {
   background: var(--card-bg);
   border-radius: 12px;
   border: 1px solid var(--border-color);
+  min-width: 0;
 }
 
 .config-row {
@@ -412,6 +459,46 @@ function onInputChange(value: string) {
 
     &:hover {
       background: var(--hover-bg);
+    }
+  }
+
+  &.fav {
+    background: var(--button-bg);
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    font-size: 16px;
+    padding: 6px 12px;
+
+    &:hover:not(:disabled) {
+      color: #FF9800;
+      border-color: #FF9800;
+    }
+
+    &.active {
+      color: #FF9800;
+    }
+
+    &:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+  }
+
+  &.export {
+    background: var(--button-bg);
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    font-size: 14px;
+    padding: 6px 12px;
+
+    &:hover:not(:disabled) {
+      color: var(--accent-color);
+      border-color: var(--accent-color);
+    }
+
+    &:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
     }
   }
 }

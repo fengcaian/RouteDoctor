@@ -3,13 +3,22 @@ import { ref, computed, onMounted, onActivated } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useHistoryStore, type HistorySession } from '@/stores/historyStore'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import HistoryDetail from '@/components/history/HistoryDetail.vue'
+import { useToast } from '@/composables/useToast'
+import { useExport } from '@/composables/useExport'
 
 const { t } = useI18n()
 const historyStore = useHistoryStore()
+const toast = useToast()
+const { exportHistoryJSON } = useExport()
 
 // Filter state
 const selectedType = ref<'all' | 'ping' | 'traceroute' | 'bandwidth'>('all')
 const searchTarget = ref('')
+
+// 详情弹窗状态
+const showDetail = ref(false)
+const selectedRecord = ref<HistorySession | null>(null)
 
 // 首次挂载和每次从 keep-alive 激活时都加载历史记录
 onMounted(() => {
@@ -75,10 +84,10 @@ function getTypeIcon(type: string): string {
   }
 }
 
-// Clear filter
-function clearFilter() {
-  selectedType.value = 'all'
-  searchTarget.value = ''
+// 点击记录查看详情
+function openDetail(record: HistorySession) {
+  selectedRecord.value = record
+  showDetail.value = true
 }
 
 // 清除所有历史记录
@@ -91,6 +100,7 @@ function handleClearHistory() {
 async function confirmClear() {
   showClearConfirm.value = false
   await historyStore.clearAllHistory()
+  toast.success(t('history.clearSuccess'))
 }
 </script>
 
@@ -105,11 +115,23 @@ async function confirmClear() {
       @confirm="confirmClear"
       @cancel="showClearConfirm = false"
     />
+    <HistoryDetail
+      :visible="showDetail"
+      :record="selectedRecord"
+      @close="showDetail = false"
+    />
     <div class="view-header">
       <div>
         <h2>{{ $t('history.title') }}</h2>
         <p class="subtitle">{{ $t('history.subtitle') }}</p>
       </div>
+      <button
+        class="export-btn"
+        @click="exportHistoryJSON(historyStore.records)"
+        :disabled="historyStore.isLoading || historyStore.records.length === 0"
+      >
+        {{ $t('history.export') }}
+      </button>
       <button
         class="clear-history-btn"
         @click="handleClearHistory"
@@ -128,6 +150,11 @@ async function confirmClear() {
           :placeholder="$t('history.searchPlaceholder')"
           class="search-input"
         />
+        <button
+          v-if="searchTarget"
+          class="search-clear-btn"
+          @click="searchTarget = ''"
+        >✕</button>
       </div>
       <div class="type-filters">
         <button
@@ -155,9 +182,6 @@ async function confirmClear() {
           ⚡ Bandwidth
         </button>
       </div>
-      <button v-if="selectedType !== 'all' || searchTarget" class="clear-btn" @click="clearFilter">
-        {{ $t('common.clear') }}
-      </button>
     </div>
 
     <!-- Loading state -->
@@ -190,6 +214,7 @@ async function confirmClear() {
           v-for="record in filteredRecords"
           :key="record.id"
           class="history-item"
+          @click="openDetail(record)"
         >
           <div class="item-header">
             <span class="type-icon">{{ getTypeIcon(record.test_type) }}</span>
@@ -239,6 +264,27 @@ async function confirmClear() {
     margin-top: 2px;
   }
 
+  .export-btn {
+    padding: 8px 16px;
+    background: var(--accent-color);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s;
+
+    &:hover:not(:disabled) {
+      background: var(--accent-color-hover);
+    }
+
+    &:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+  }
+
   .clear-history-btn {
     padding: 8px 16px;
     background: transparent;
@@ -272,11 +318,12 @@ async function confirmClear() {
   .search-box {
     flex: 1;
     min-width: 200px;
+    position: relative;
   }
 
   .search-input {
     width: 100%;
-    padding: 8px 12px;
+    padding: 8px 32px 8px 12px;
     background: var(--input-bg);
     border: 1px solid var(--border-color);
     border-radius: 6px;
@@ -290,6 +337,31 @@ async function confirmClear() {
     &:focus {
       outline: none;
       border-color: var(--primary-color);
+    }
+  }
+
+  .search-clear-btn {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    background: var(--border-color);
+    color: var(--text-muted);
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+
+    &:hover {
+      background: var(--error-color);
+      color: white;
     }
   }
 
@@ -317,22 +389,6 @@ async function confirmClear() {
       background: var(--primary-color);
       border-color: var(--primary-color);
       color: white;
-    }
-  }
-
-  .clear-btn {
-    padding: 6px 12px;
-    background: transparent;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 13px;
-    transition: all 0.2s;
-
-    &:hover {
-      border-color: var(--text-muted);
-      color: var(--text-primary);
     }
   }
 }
@@ -400,9 +456,11 @@ async function confirmClear() {
   border: 1px solid var(--border-color);
   padding: 16px;
   transition: border-color 0.2s;
+  cursor: pointer;
 
   &:hover {
     border-color: var(--primary-color);
+    background: var(--hover-bg);
   }
 
   .item-header {

@@ -7,12 +7,16 @@ import PingStats from '@/components/ping/PingStats.vue'
 import PingConfig from '@/components/ping/PingConfig.vue'
 import PingTable from '@/components/ping/PingTable.vue'
 import { usePingStore } from '@/stores'
-import { usePing, usePingListener, stopAllPings } from '@/composables'
+import { usePing, usePingListener } from '@/composables'
+import { useToast } from '@/composables/useToast'
+import { useAlertStore } from '@/stores/alertStore'
 import type { TargetConfig, PingResult, PingTab } from '@/types'
 
 const { t } = useI18n()
 const pingStore = usePingStore()
 const { startPing, stopPing } = usePing()
+const toast = useToast()
+const alertStore = useAlertStore()
 
 // ==================== 任务 5.1：内部状态管理 ====================
 
@@ -128,10 +132,10 @@ async function handleStart(config: TargetConfig): Promise<void> {
   pingStore.setRunning(config.target, true)
   try {
     await startPing(config)
-  } catch (e) {
-    // 启动失败，回退运行状态
+  } catch (e: any) {
+    // 启动失败，回退运行状态并通知用户
     pingStore.setRunning(config.target, false)
-    console.error('启动 Ping 失败:', e)
+    toast.error(`Ping 启动失败: ${typeof e === 'string' ? e : e.message || '未知错误'}`)
   }
 }
 
@@ -201,26 +205,19 @@ onActivated(() => {
   }
 })
 
-// onDeactivated：离开页面时停止所有 Ping 会话并重置状态
-onDeactivated(async () => {
-  // 停止所有正在运行的 Ping 会话
-  await stopAllPings()
-
-  // 重置 store 状态
-  pingStore.resetStore()
-
-  // 清空标签页状态
-  tabs.value = []
-  activeTabId.value = ''
-  initialized = false
-
-  console.log('PingView deactivated - 所有 Ping 会话已停止')
+// onDeactivated：离开页面时保持 Ping 会话继续运行
+// 用户切换页面后 Ping 任务在后台继续，数据不会丢失
+onDeactivated(() => {
+  // 不做任何清理，保持 keep-alive 缓存状态
+  // Ping 会话在后台继续运行，用户返回时可以看到最新数据
 })
 
-// 监听 Ping 结果事件，按 target 路由到 store
+// 监听 Ping 结果事件，按 target 路由到 store，并检查告警
 usePingListener(
   (result: PingResult) => {
     pingStore.addResult(result)
+    // 检查告警规则
+    alertStore.checkPingResult(result.target, result.latency_ms, result.is_timeout)
   }
 )
 </script>
@@ -278,10 +275,15 @@ usePingListener(
   display: flex;
   flex-direction: column;
   gap: 12px;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-width: 0;
 }
 
 .view-header {
   margin-bottom: 8px;
+  flex-shrink: 0;
 
   h2 {
     font-size: 20px;
@@ -326,6 +328,7 @@ usePingListener(
 .ping-content {
   display: flex;
   gap: 12px;
+  min-width: 0;
 }
 
 .ping-main {
@@ -333,5 +336,6 @@ usePingListener(
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-width: 0;
 }
 </style>

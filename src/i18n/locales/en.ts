@@ -22,6 +22,8 @@ export default {
     history: 'History',
     dns: 'DNS Lookup',
     networkInfo: 'Network Info',
+    pathMonitor: 'Path Monitor',
+    continuousTrace: 'Path Monitor',
     settings: 'Settings',
     backHome: 'Back to Home',
     switchLang: 'Switch Language',
@@ -50,6 +52,20 @@ export default {
     tipBandwidth: 'Measure your download and upload speeds.',
     tipDns: 'Query DNS records for any domain name.',
     tipNetworkInfo: 'View your local network configuration and interfaces.',
+    status: {
+      running: 'Running',
+      idle: 'Idle',
+      testing: 'Testing',
+      avgLatency: 'Avg Latency',
+      target: 'Target',
+      loss: 'Loss',
+      noPing: 'No Ping monitor active',
+      noBandwidth: 'No speed test results',
+      noHistory: 'No history records',
+      records: 'records',
+      historyHint: 'Click to view details',
+      goTo: 'Go to',
+    },
   },
 
   // Ping page
@@ -87,6 +103,10 @@ export default {
     newTab: 'New Tab',
     defaultTarget: '8.8.8.8',
     tabTimeout: 'Timeout',
+    showingLatest: 'Showing latest {shown} of {total} results',
+    addFav: 'Add to favorites',
+    removeFav: 'Remove from favorites',
+    exportData: 'Export data',
   },
 
   // Traceroute page
@@ -176,6 +196,8 @@ export default {
     clearHistory: 'Clear History',
     clearConfirmTitle: 'Clear History',
     clearConfirmMessage: 'Clear all history records? This action cannot be undone.',
+    clearSuccess: 'History cleared',
+    export: 'Export',
     searchPlaceholder: 'Search target...',
     all: 'All',
     noRecords: 'No history records yet.',
@@ -188,6 +210,15 @@ export default {
     hops: 'hops',
     packets: 'packets',
     loss: 'loss',
+    detail: {
+      startTime: 'Start Time',
+      endTime: 'End Time',
+      duration: 'Duration',
+      statistics: 'Statistics',
+      testResults: 'Test Results',
+      routePath: 'Route Path',
+      server: 'Test Server',
+    },
   },
 
   // Status bar
@@ -234,6 +265,20 @@ export default {
     resetSettings: 'Reset to Defaults',
     resetConfirmTitle: 'Reset Settings',
     resetConfirmMessage: 'Reset all settings to default values?',
+  },
+
+  // Continuous path monitoring
+  continuousTrace: {
+    title: 'Continuous Path Monitor',
+    subtitle: 'Continuously ping each hop to detect network bottlenecks in real-time',
+    interval: 'Interval (ms)',
+    start: 'Start Monitor',
+    stop: 'Stop Monitor',
+    discovering: 'Discovering path...',
+    heatmapTitle: 'Latency Heatmap',
+    statsTitle: 'Per-Hop Statistics',
+    samples: 'Samples',
+    emptyHint: 'Enter a target to start continuous path monitoring',
   },
 
   // DNS lookup page

@@ -2,6 +2,7 @@
 import { onMounted } from 'vue'
 import AppSidebar from '@/components/common/AppSidebar.vue'
 import StatusBar from '@/components/common/StatusBar.vue'
+import ToastContainer from '@/components/common/ToastContainer.vue'
 import { stopAllPings } from '@/composables/usePing'
 import { usePingStore, useTracerouteStore, useBandwidthStore } from '@/stores'
 
@@ -36,6 +37,7 @@ onMounted(async () => {
       </main>
       <StatusBar />
     </div>
+    <ToastContainer />
   </div>
 </template>
 
@@ -52,12 +54,15 @@ onMounted(async () => {
   flex-direction: column;
   flex: 1;
   overflow: hidden;
+  min-width: 0;
 }
 
 .content {
   flex: 1;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 20px;
   background: var(--main-bg);
+  min-width: 0;
 }
 </style>

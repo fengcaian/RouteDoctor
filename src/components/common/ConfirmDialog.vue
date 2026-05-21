@@ -1,9 +1,10 @@
 <script setup lang="ts">
+import { onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
 
-defineProps<{
+const props = defineProps<{
   visible: boolean
   title?: string
   message: string
@@ -15,6 +16,21 @@ const emit = defineEmits<{
   confirm: []
   cancel: []
 }>()
+
+// Esc 键关闭弹窗
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && props.visible) {
+    emit('cancel')
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', handleKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleKeydown)
+})
 </script>
 
 <template>

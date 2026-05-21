@@ -1,6 +1,6 @@
 # PingPlotter Next
 
-> 网络监控桌面应用 - 类似 PingPlotter，提供 Ping、路由追踪、带宽测试功能
+> 开源网络监控桌面应用 - 提供持续路径监控、Ping 监控、带宽测试、DNS 查询等功能
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Tauri](https://img.shields.io/badge/Tauri-2.0-blue.svg)
@@ -9,11 +9,30 @@
 
 ## 功能特性
 
-- **实时 Ping 监控** - 持续监控目标主机延迟和丢包率
-- **路由追踪** - 追踪数据包经过的网络节点
-- **带宽测试** - 测试网络上传和下载速度
-- **历史记录** - 查看历史 Ping 会话数据
-- **暗黑主题** - 舒适的深色界面
+### 核心功能
+
+- **🗺️ 持续路径监控** - 发现网络路径后对每一跳持续 Ping，通过延迟热力图实时发现网络瓶颈
+- **📡 Ping 监控** - 多标签页同时监控多个目标，实时延迟图表、统计数据、丢包率
+- **⚡ 带宽测试** - 测量下载/上传速度，动态量程仪表盘
+- **🔍 DNS 查询** - 支持 A/AAAA/CNAME/MX/NS/TXT 等多种记录类型
+- **🖥️ 网络信息** - 本机 IP、公网 IP、DNS 服务器、网络接口一览
+
+### 进阶功能
+
+- **⚠️ 告警系统** - 延迟/丢包/连续超时阈值告警，Toast + 系统通知
+- **★ 目标收藏夹** - 保存常用监控目标，快速切换
+- **⬇ 数据导出** - 支持 CSV/JSON 格式导出 Ping、Traceroute、带宽测试数据
+- **📊 历史记录** - 查看历史测试结果详情，支持筛选和搜索
+- **🌙 主题切换** - 深色/浅色/跟随系统，平滑过渡动画
+- **🌐 国际化** - 中文/英文双语支持
+
+### 用户体验
+
+- 侧边栏可折叠，适配不同屏幕尺寸
+- Toast 通知系统，操作反馈即时可见
+- 骨架屏加载状态，减少等待焦虑
+- Esc 键关闭弹窗，Enter 键快速操作
+- 响应式布局，窗口缩放无水平溢出
 
 ## 技术栈
 
@@ -22,13 +41,14 @@
 |------|------|
 | Vue 3 | 渐进式 JavaScript 框架 (Composition API) |
 | TypeScript | 类型安全的 JavaScript 超集 |
-| Pinia | Vue 3 推荐的状态管理 |
-| Vue Router | 官方路由管理器 |
-| ECharts | 强大的数据可视化图表库 |
-| Vite | 下一代前端构建工具 |
+| Pinia | Vue 3 状态管理 |
+| Vue Router | 路由管理（keep-alive 缓存） |
+| ECharts | 数据可视化（折线图、仪表盘、热力图） |
+| vue-i18n | 国际化 |
+| Vite | 构建工具 |
 | Sass | CSS 预处理器 |
 
-### 后端 (Tauri)
+### 后端 (Tauri/Rust)
 | 依赖 | 说明 |
 |------|------|
 | Tauri 2 | 跨平台桌面应用框架 |
@@ -43,34 +63,58 @@
 
 ```
 PingPlotter-Next/
-├── src/                      # 前端源码
-│   ├── views/                # 页面视图
-│   │   ├── Dashboard.vue     # 仪表盘
-│   │   ├── PingView.vue      # Ping 监控
-│   │   ├── TraceView.vue     # 路由追踪
-│   │   ├── BandwidthView.vue # 带宽测试
-│   │   └── HistoryView.vue   # 历史记录
-│   ├── components/           # 组件
-│   │   ├── common/           # 通用组件
-│   │   ├── ping/             # Ping 相关组件
-│   │   ├── traceroute/       # 路由追踪组件
-│   │   └── bandwidth/        # 带宽测试组件
-│   ├── composables/          # 组合式函数 (与后端交互)
-│   ├── stores/               # Pinia 状态管理
-│   ├── router/               # 路由配置
-│   ├── types/                # TypeScript 类型定义
-│   └── utils/                # 工具函数
-├── src-tauri/                # Tauri 后端源码
-│   ├── src/
-│   │   ├── commands/         # Tauri 命令 (前端 API)
-│   │   ├── services/         # 业务逻辑层
-│   │   ├── models/           # 数据模型
-│   │   └── storage/          # 数据存储
-│   ├── icons/                # 应用图标
-│   ├── Cargo.toml            # Rust 依赖配置
-│   └── tauri.conf.json       # Tauri 配置
-├── package.json              # 前端依赖配置
-└── README.md                 # 项目文档
+├── src/                          # 前端源码
+│   ├── views/                    # 页面视图
+│   │   ├── Dashboard.vue         # 仪表盘（实时状态概览）
+│   │   ├── PingView.vue          # Ping 监控（多标签页）
+│   │   ├── TraceView.vue         # 路径监控（热力图 + 统计）
+│   │   ├── BandwidthView.vue     # 带宽测试（动态仪表盘）
+│   │   ├── DnsView.vue           # DNS 查询
+│   │   ├── NetworkInfoView.vue   # 网络信息（骨架屏加载）
+│   │   ├── HistoryView.vue       # 历史记录（详情弹窗）
+│   │   └── SettingsView.vue      # 设置
+│   ├── components/               # 组件
+│   │   ├── common/               # 通用组件（Toast、侧边栏、确认框）
+│   │   ├── ping/                 # Ping 组件（图表、统计、表格、标签栏）
+│   │   ├── bandwidth/            # 带宽组件（仪表盘、配置）
+│   │   └── history/              # 历史组件（详情弹窗）
+│   ├── composables/              # 组合式函数
+│   │   ├── usePing.ts            # Ping 后端交互
+│   │   ├── useContinuousTrace.ts # 持续路径监控
+│   │   ├── useTraceroute.ts      # Traceroute 后端交互
+│   │   ├── useBandwidth.ts       # 带宽测试
+│   │   ├── useToast.ts           # Toast 通知系统
+│   │   └── useExport.ts          # 数据导出（CSV/JSON）
+│   ├── stores/                   # Pinia 状态管理
+│   │   ├── pingStore.ts          # Ping 数据
+│   │   ├── continuousTraceStore.ts # 持续路径监控数据
+│   │   ├── bandwidthStore.ts     # 带宽测试数据
+│   │   ├── historyStore.ts       # 历史记录
+│   │   ├── alertStore.ts         # 告警规则和事件
+│   │   ├── favoritesStore.ts     # 目标收藏夹
+│   │   └── settingsStore.ts      # 应用设置
+│   ├── i18n/                     # 国际化
+│   ├── router/                   # 路由配置
+│   └── types/                    # TypeScript 类型定义
+├── src-tauri/                    # Tauri 后端源码
+│   └── src/
+│       ├── commands/             # Tauri 命令
+│       │   ├── ping.rs           # Ping 命令
+│       │   ├── continuous_trace.rs # 持续路径监控
+│       │   ├── traceroute.rs     # 单次 Traceroute
+│       │   ├── bandwidth.rs      # 带宽测试
+│       │   ├── network.rs        # 网络信息/DNS
+│       │   └── history.rs        # 历史记录
+│       ├── services/             # 业务逻辑层
+│       │   ├── icmp.rs           # ICMP Ping 服务
+│       │   ├── continuous_trace.rs # 持续监控服务
+│       │   ├── traceroute.rs     # Traceroute 服务
+│       │   ├── bandwidth.rs      # 带宽测试服务
+│       │   └── dns.rs            # DNS 解析服务
+│       ├── models/               # 数据模型
+│       └── storage/              # SQLite 数据存储
+├── package.json
+└── README.md
 ```
 
 ## 开发指南
@@ -79,7 +123,7 @@ PingPlotter-Next/
 
 - [Node.js](https://nodejs.org/) v18+
 - [Rust](https://www.rust-lang.org/tools/install) v1.70+
-- Windows 10/11 (开发环境)
+- Windows 10/11（主要开发平台）
 
 ### 安装依赖
 
@@ -89,15 +133,11 @@ npm install
 
 ### 开发模式
 
-启动开发服务器（自动热重载）：
-
 ```bash
 npm run tauri dev
 ```
 
 ### 构建发布
-
-构建生产版本：
 
 ```bash
 npm run tauri build
@@ -110,61 +150,49 @@ npm run tauri build
 | 命令 | 说明 |
 |------|------|
 | `npm run dev` | 启动前端开发服务器 |
-| `npm run build` | 构建前端 |
-| `npm run preview` | 预览构建结果 |
-| `npm run tauri dev` | 启动完整的 Tauri 开发环境 |
-| `npm run tauri build` | 构建完整的桌面应用 |
+| `npm run build` | 构建前端（vue-tsc + vite） |
+| `npm run tauri dev` | 启动完整开发环境 |
+| `npm run tauri build` | 构建桌面应用 |
 
 ## 使用说明
 
+### 持续路径监控
+
+1. 进入 **Traceroute** 页面
+2. 输入目标地址，选择探测方式（ICMP/UDP/TCP）
+3. 点击 **开始监控**
+4. 等待路径发现完成（几秒钟）
+5. 查看延迟热力图 — 横轴时间，纵轴跳数，颜色表示延迟
+6. 下方统计表格显示每跳的平均/最小/最大延迟和丢包率
+
 ### Ping 监控
 
-1. 在目标输入框中输入 IP 地址或域名（如 `8.8.8.8` 或 `google.com`）
-2. 配置参数：
-   - **Interval** - Ping 间隔（毫秒）
-   - **Timeout** - 超时时间（毫秒）
-   - **Packet Size** - 数据包大小（字节）
-3. 点击 **Start Ping** 开始监控
-4. 实时查看延迟图表和统计数据
-5. 点击 **Clear Results** 清空当前结果
-
-### 路由追踪
-
-1. 输入目标地址
-2. 点击 **Start Trace**
-3. 查看路由跳数、延迟和地理位置信息
+1. 输入目标地址，配置间隔/超时/包大小
+2. 点击 **开始 Ping** 或按 Enter
+3. 支持多标签页同时监控多个目标
+4. 切换页面后 Ping 在后台继续运行
+5. 点击 ⬇ 按钮导出数据为 CSV
+6. 点击 ★ 按钮收藏目标
 
 ### 带宽测试
 
-1. 选择测试服务器
-2. 点击 **Start Test**
-3. 查看上传/下载速度
+1. 点击 **开始测速**
+2. 自动测试下载和上传速度
+3. 仪表盘动态量程自适应（10Mbps ~ 10Gbps）
+4. 测试完成后 Toast 通知结果
+
+### 告警系统
+
+默认告警规则（可在代码中自定义）：
+- 延迟 > 200ms 连续 3 次 → Toast 告警
+- 连续超时 5 次 → Toast + 系统通知
 
 ## 数据存储
 
-- Ping 会话数据存储在 SQLite 数据库中
-- 每个目标最多保留最近 1000 条结果在内存中
-- 会话结束或应用退出时自动保存到数据库
-
-## 内存优化
-
-已实施以下内存优化措施：
-
-1. **后端限制** - 每个 Ping 会话在内存中最多保留 1000 条结果
-2. **前端限制** - 图表组件只显示最近 10 个数据点
-3. **事件监听** - 使用单例模式避免重复注册事件监听器
-4. **数组优化** - 避免不必要的数组复制
-
-## 常见问题
-
-### Q: Ping 命令失败 "拒绝访问"
-A: 某些网络环境可能需要管理员权限运行 ICMP Ping。尝试以管理员身份运行应用。
-
-### Q: DNS 解析失败
-A: 应用会先尝试系统 DNS，失败后自动切换到公共 DNS（1.1.1.1, 8.8.8.8, 223.5.5.5）。
-
-### Q: 应用卡顿或内存占用高
-A: 长时间运行的 Ping 会话会积累数据。点击 "Clear Results" 或重启会话可释放内存。
+- 测试结果存储在 SQLite 数据库中
+- 应用设置和收藏夹存储在 localStorage
+- 每个 Ping 目标最多保留 1000 条结果在内存中
+- 应用退出时自动保存未完成的会话
 
 ## 许可证
 

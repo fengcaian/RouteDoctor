@@ -2,11 +2,12 @@
 import SpeedGauge from '@/components/bandwidth/SpeedGauge.vue'
 import BandwidthConfig from '@/components/bandwidth/BandwidthConfig.vue'
 import { useBandwidthStore } from '@/stores'
-import { useBandwidth, useBandwidthListener } from '@/composables'
+import { useBandwidth, useBandwidthListener, useToast } from '@/composables'
 import type { BandwidthResult, BandwidthProgress } from '@/types'
 
 const bandwidthStore = useBandwidthStore()
 const { startBandwidthTest, stopBandwidthTest } = useBandwidth()
+const toast = useToast()
 
 // Listen to bandwidth progress
 useBandwidthListener(
@@ -16,6 +17,8 @@ useBandwidthListener(
   (result: BandwidthResult) => {
     bandwidthStore.setResult(result)
     bandwidthStore.setRunning(false)
+    // 测试完成通知
+    toast.success(`测速完成：下载 ${result.download_speed_mbps.toFixed(1)} Mbps / 上传 ${result.upload_speed_mbps.toFixed(1)} Mbps`)
   }
 )
 

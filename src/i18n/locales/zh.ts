@@ -22,6 +22,8 @@ export default {
     history: '历史记录',
     dns: 'DNS 查询',
     networkInfo: '网络信息',
+    pathMonitor: '路径监控',
+    continuousTrace: '路径监控',
     settings: '设置',
     backHome: '返回首页',
     switchLang: '切换语言',
@@ -50,6 +52,20 @@ export default {
     tipBandwidth: '测量你的下载和上传速度。',
     tipDns: '查询任意域名的 DNS 记录。',
     tipNetworkInfo: '查看本机网络配置和接口信息。',
+    status: {
+      running: '运行中',
+      idle: '空闲',
+      testing: '测试中',
+      avgLatency: '平均延迟',
+      target: '目标',
+      loss: '丢包率',
+      noPing: '暂无 Ping 监控',
+      noBandwidth: '暂无测速结果',
+      noHistory: '暂无历史记录',
+      records: '条记录',
+      historyHint: '点击查看详细历史',
+      goTo: '前往',
+    },
   },
 
   // Ping 页面
@@ -87,6 +103,10 @@ export default {
     newTab: '新标签页',
     defaultTarget: '8.8.8.8',
     tabTimeout: '超时',
+    showingLatest: '显示最近 {shown} 条（共 {total} 条）',
+    addFav: '收藏目标',
+    removeFav: '取消收藏',
+    exportData: '导出数据',
   },
 
   // Traceroute 页面
@@ -176,6 +196,8 @@ export default {
     clearHistory: '清除历史',
     clearConfirmTitle: '清除历史记录',
     clearConfirmMessage: '是否清除所有历史记录？此操作不可撤销。',
+    clearSuccess: '历史记录已清除',
+    export: '导出',
     searchPlaceholder: '搜索目标...',
     all: '全部',
     noRecords: '暂无历史记录。',
@@ -188,6 +210,15 @@ export default {
     hops: '跳',
     packets: '个包',
     loss: '丢包',
+    detail: {
+      startTime: '开始时间',
+      endTime: '结束时间',
+      duration: '持续时间',
+      statistics: '统计数据',
+      testResults: '测试结果',
+      routePath: '路由路径',
+      server: '测试服务器',
+    },
   },
 
   // 状态栏
@@ -234,6 +265,20 @@ export default {
     resetSettings: '恢复默认设置',
     resetConfirmTitle: '恢复默认设置',
     resetConfirmMessage: '是否恢复所有设置为默认值？',
+  },
+
+  // 持续路径监控
+  continuousTrace: {
+    title: '持续路径监控',
+    subtitle: '对路径上每一跳持续 Ping，实时发现网络瓶颈',
+    interval: '采样间隔 (ms)',
+    start: '开始监控',
+    stop: '停止监控',
+    discovering: '正在发现路径...',
+    heatmapTitle: '延迟热力图',
+    statsTitle: '每跳统计',
+    samples: '采样数',
+    emptyHint: '输入目标地址开始持续路径监控',
   },
 
   // DNS 查询页面

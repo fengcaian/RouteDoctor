@@ -19,6 +19,11 @@ const router = createRouter({
       component: () => import('@/views/TraceView.vue')
     },
     {
+      path: '/path-monitor',
+      name: 'path-monitor',
+      component: () => import('@/views/PathMonitorView.vue')
+    },
+    {
       path: '/bandwidth',
       name: 'bandwidth',
       component: () => import('@/views/BandwidthView.vue')
