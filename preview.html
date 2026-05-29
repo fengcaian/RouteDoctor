@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <title>实时网络节点监控</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #0b1220;
+      color: white;
+      font-family: Arial;
+      overflow: hidden;
+    }
+
+    .toolbar {
+      height: 60px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 20px;
+      background: #111827;
+      border-bottom: 1px solid #1f2937;
+    }
+
+    button {
+      background: #00ffcc;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    .status {
+      color: #9ca3af;
+    }
+
+    #chart {
+      display: block;
+      background: #081018;
+      cursor: grab;
+    }
+
+    #chart:active {
+      cursor: grabbing;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="toolbar">
+    <button id="liveBtn">
+      返回实时
+    </button>
+
+    <div class="status">
+      模式：
+      <span id="mode">
+        实时监控
+      </span>
+    </div>
+
+    <div class="status">
+      数据量：
+      <span id="count">
+        0
+      </span>
+    </div>
+  </div>
+
+  <canvas id="chart"></canvas>
+
+  <script>
+    const canvas =
+      document.getElementById("chart");
+
+    const ctx =
+      canvas.getContext("2d");
+
+    const modeEl =
+      document.getElementById("mode");
+
+    const countEl =
+      document.getElementById("count");
+
+    const liveBtn =
+      document.getElementById("liveBtn");
+
+    // ===== 尺寸 =====
+
+    let WIDTH = window.innerWidth;
+
+    let HEIGHT =
+      window.innerHeight - 60;
+
+    canvas.width = WIDTH;
+    canvas.height = HEIGHT;
+
+    // ===== 配置 =====
+
+    const POINT_GAP = 40;
+
+    let MAX_VISIBLE_POINTS =
+      Math.floor(WIDTH / POINT_GAP);
+
+    // ===== 数据 =====
+
+    // 所有历史数据
+    const data = [];
+
+    // 当前 viewport 起点
+    let viewportStart = 0;
+
+    // 是否自动跟随实时
+    let autoFollow = true;
+
+    // ===== 拖动 =====
+
+    let dragging = false;
+
+    let lastX = 0;
+
+    // ===== 初始化 =====
+
+    function init() {
+
+      // 每秒追加数据
+      setInterval(() => {
+        appendData();
+      }, 1000);
+
+      draw();
+    }
+
+    // ===== 模拟实时数据 =====
+
+    function appendData() {
+
+      const latency =
+        50 +
+        Math.random() * 120 +
+        Math.sin(Date.now() / 500) * 30;
+
+      data.push({
+        time: formatTime(),
+        latency
+      });
+
+      countEl.innerText = data.length;
+
+      // 自动跟随实时
+      if (autoFollow) {
+
+        viewportStart = Math.max(
+          0,
+          data.length - MAX_VISIBLE_POINTS
+        );
+      }
+
+      draw();
+    }
+
+    // ===== 时间 =====
+
+    function formatTime() {
+
+      const d = new Date();
+
+      return d.toLocaleTimeString();
+    }
+
+    // ===== 绘制 =====
+
+    function draw() {
+
+      ctx.clearRect(
+        0,
+        0,
+        WIDTH,
+        HEIGHT
+      );
+
+      drawBackground();
+
+      drawGrid();
+
+      drawAxis();
+
+      drawLine();
+    }
+
+    // ===== 背景 =====
+
+    function drawBackground() {
+
+      ctx.fillStyle = "#081018";
+
+      ctx.fillRect(
+        0,
+        0,
+        WIDTH,
+        HEIGHT
+      );
+    }
+
+    // ===== 网格 =====
+
+    function drawGrid() {
+
+      ctx.strokeStyle = "#1b2a41";
+
+      ctx.lineWidth = 1;
+
+      // 竖线
+      for (
+        let x = 0;
+        x <= WIDTH;
+        x += 50
+      ) {
+
+        ctx.beginPath();
+
+        ctx.moveTo(x, 0);
+
+        ctx.lineTo(x, HEIGHT);
+
+        ctx.stroke();
+      }
+
+      // 横线
+      for (
+        let y = 0;
+        y <= HEIGHT;
+        y += 50
+      ) {
+
+        ctx.beginPath();
+
+        ctx.moveTo(0, y);
+
+        ctx.lineTo(WIDTH, y);
+
+        ctx.stroke();
+      }
+    }
+
+    // ===== 坐标轴 =====
+
+    function drawAxis() {
+
+      ctx.strokeStyle = "#4a5a70";
+
+      ctx.lineWidth = 2;
+
+      // x轴
+      ctx.beginPath();
+
+      ctx.moveTo(0, HEIGHT - 40);
+
+      ctx.lineTo(WIDTH, HEIGHT - 40);
+
+      ctx.stroke();
+
+      // y轴
+      ctx.beginPath();
+
+      ctx.moveTo(60, 0);
+
+      ctx.lineTo(60, HEIGHT);
+
+      ctx.stroke();
+    }
+
+    // ===== 主折线 =====
+
+    function drawLine() {
+
+      const visibleData =
+        data.slice(
+          viewportStart,
+          viewportStart +
+            MAX_VISIBLE_POINTS
+        );
+
+      if (!visibleData.length) {
+        return;
+      }
+
+      // 关键：
+      // 初始从右边开始
+      const offsetX =
+        WIDTH -
+        visibleData.length *
+          POINT_GAP;
+
+      // ===== 折线 =====
+
+      ctx.beginPath();
+
+      visibleData.forEach(
+        (item, index) => {
+
+          const x =
+            offsetX +
+            index * POINT_GAP;
+
+          const y =
+            HEIGHT -
+            (item.latency / 250) *
+              (HEIGHT - 80) -
+            40;
+
+          if (index === 0) {
+
+            ctx.moveTo(x, y);
+
+          } else {
+
+            ctx.lineTo(x, y);
+          }
+        }
+      );
+
+      ctx.strokeStyle = "#00ffcc";
+
+      ctx.lineWidth = 3;
+
+      ctx.stroke();
+
+      // ===== 点 =====
+
+      visibleData.forEach(
+        (item, index) => {
+
+          const x =
+            offsetX +
+            index * POINT_GAP;
+
+          const y =
+            HEIGHT -
+            (item.latency / 250) *
+              (HEIGHT - 80) -
+            40;
+
+          // 点
+          ctx.beginPath();
+
+          ctx.arc(
+            x,
+            y,
+            5,
+            0,
+            Math.PI * 2
+          );
+
+          ctx.fillStyle = "#00ffcc";
+
+          ctx.fill();
+
+          // 延迟文字
+          ctx.fillStyle = "#ffffff";
+
+          ctx.font = "12px Arial";
+
+          ctx.fillText(
+            `${Math.round(
+              item.latency
+            )}ms`,
+            x - 15,
+            y - 15
+          );
+
+          // 时间
+          ctx.fillStyle = "#94a3b8";
+
+          ctx.fillText(
+            item.time,
+            x - 22,
+            HEIGHT - 12
+          );
+        }
+      );
+    }
+
+    // ===== 返回实时 =====
+
+    liveBtn.onclick = () => {
+
+      autoFollow = true;
+
+      modeEl.innerText =
+        "实时监控";
+
+      viewportStart = Math.max(
+        0,
+        data.length -
+          MAX_VISIBLE_POINTS
+      );
+
+      draw();
+    };
+
+    // ===== 鼠标拖动 =====
+
+    canvas.addEventListener(
+      "mousedown",
+      (e) => {
+
+        dragging = true;
+
+        lastX = e.clientX;
+
+        autoFollow = false;
+
+        modeEl.innerText =
+          "历史查看";
+      }
+    );
+
+    canvas.addEventListener(
+      "mousemove",
+      (e) => {
+
+        if (!dragging) {
+          return;
+        }
+
+        const dx =
+          e.clientX - lastX;
+
+        lastX = e.clientX;
+
+        // 拖动灵敏度
+        const move =
+          Math.round(dx / 20);
+
+        viewportStart -= move;
+
+        const max =
+          Math.max(
+            0,
+            data.length -
+              MAX_VISIBLE_POINTS
+          );
+
+        viewportStart = Math.max(
+          0,
+          viewportStart
+        );
+
+        viewportStart = Math.min(
+          max,
+          viewportStart
+        );
+
+        draw();
+      }
+    );
+
+    canvas.addEventListener(
+      "mouseup",
+      () => {
+
+        dragging = false;
+      }
+    );
+
+    canvas.addEventListener(
+      "mouseleave",
+      () => {
+
+        dragging = false;
+      }
+    );
+
+    // ===== 窗口缩放 =====
+
+    window.addEventListener(
+      "resize",
+      () => {
+
+        WIDTH = window.innerWidth;
+
+        HEIGHT =
+          window.innerHeight - 60;
+
+        canvas.width = WIDTH;
+
+        canvas.height = HEIGHT;
+
+        MAX_VISIBLE_POINTS =
+          Math.floor(
+            WIDTH / POINT_GAP
+          );
+
+        draw();
+      }
+    );
+
+    // ===== 启动 =====
+
+    init();
+
+  </script>
+
+</body>
+</html>

@@ -37,7 +37,8 @@
       "Bash(xargs -r taskkill /F /PID)",
       "Bash(kill 30376:*)",
       "Bash(tracetcp:*)",
-      "Bash(py:*)"
+      "Bash(py:*)",
+      "WebFetch(domain:www.pingplotter.com)"
     ]
   }
 }

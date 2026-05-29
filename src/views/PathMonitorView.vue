@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import PathHeatmap from '@/components/pathmonitor/PathHeatmap.vue'
+import PathLatencyChart from '@/components/pathmonitor/PathLatencyChart.vue'
 import { usePathMonitorStore } from '@/stores/pathMonitorStore'
 import { useToast } from '@/composables/useToast'
 
@@ -21,13 +21,63 @@ const timeoutMs = ref(3000)
 const phase = ref<'idle' | 'discovering' | 'monitoring'>('idle')
 const discoveredHops = ref<{ hopNumber: number, ip: string | null, hostname: string | null }[]>([])
 
+// 选中显示在折线图中的跳号集合
+const selectedHopNumbers = ref<number[]>([])
+
+// 是否正在运行
+const isRunning = computed(() => phase.value !== 'idle')
+
+// 当 session 初始化或 hops 变化时，默认选中最后一跳（最终目标）
+watch(
+  () => pathStore.session?.hops.length,
+  (len) => {
+    if (!len) {
+      selectedHopNumbers.value = []
+      return
+    }
+    // 仅在当前没有选中或选中均失效时，重置为默认（最后一跳）
+    const validHopNumbers = pathStore.session?.hops.map(h => h.hopNumber) || []
+    const stillValid = selectedHopNumbers.value.filter(n => validHopNumbers.includes(n))
+    if (stillValid.length === 0) {
+      const lastHop = pathStore.session?.hops[pathStore.session.hops.length - 1]
+      if (lastHop) {
+        selectedHopNumbers.value = [lastHop.hopNumber]
+      }
+    } else if (stillValid.length !== selectedHopNumbers.value.length) {
+      selectedHopNumbers.value = stillValid
+    }
+  }
+)
+
+/**
+ * 切换某个跳是否显示在图表中
+ * - 普通点击：单选（替换为该节点）
+ * - Ctrl/Cmd + 点击：追加/移除该节点
+ */
+function toggleHopSelection(hopNumber: number, event: MouseEvent) {
+  const isMulti = event.ctrlKey || event.metaKey
+  const currentIdx = selectedHopNumbers.value.indexOf(hopNumber)
+
+  if (isMulti) {
+    if (currentIdx >= 0) {
+      // 已选 → 移除（保证至少留一个）
+      if (selectedHopNumbers.value.length > 1) {
+        selectedHopNumbers.value = selectedHopNumbers.value.filter(n => n !== hopNumber)
+      }
+    } else {
+      // 未选 → 追加
+      selectedHopNumbers.value = [...selectedHopNumbers.value, hopNumber]
+    }
+  } else {
+    // 单选：直接替换
+    selectedHopNumbers.value = [hopNumber]
+  }
+}
+
 // 定时器
 let monitorTimer: ReturnType<typeof setInterval> | null = null
 let traceUnlisten: (() => void) | null = null
 let traceCompleteUnlisten: (() => void) | null = null
-
-// 是否正在运行
-const isRunning = computed(() => phase.value !== 'idle')
 
 /**
  * 开始路径监控：先发现路径，再持续 Ping 每一跳
@@ -280,13 +330,16 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 热力图 -->
-    <div class="heatmap-section">
-      <PathHeatmap />
+    <!-- 实时延迟折线图（传送带模式） -->
+    <div class="chart-section">
+      <PathLatencyChart :selected-hops="selectedHopNumbers" />
     </div>
 
     <!-- 跳数详情表格 -->
     <div v-if="pathStore.session && pathStore.session.hops.length > 0" class="hops-detail">
+      <div class="hops-tip">
+        {{ t('pathLatency.tableTip') }}
+      </div>
       <table class="hops-table">
         <thead>
           <tr>
@@ -301,8 +354,21 @@ onUnmounted(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="hop in pathStore.session.hops" :key="hop.hopNumber">
-            <td>{{ hop.hopNumber }}</td>
+          <tr
+            v-for="hop in pathStore.session.hops"
+            :key="hop.hopNumber"
+            class="hop-row"
+            :class="{ selected: selectedHopNumbers.includes(hop.hopNumber) }"
+            @click="toggleHopSelection(hop.hopNumber, $event)"
+          >
+            <td>
+              <span
+                class="hop-color-dot"
+                v-if="selectedHopNumbers.includes(hop.hopNumber)"
+                :style="{ background: ['#4CAF50','#2196F3','#FF9800','#E91E63','#9C27B0','#00BCD4','#FFC107','#F44336','#8BC34A','#3F51B5'][hop.hopNumber % 10] }"
+              ></span>
+              {{ hop.hopNumber }}
+            </td>
             <td class="mono">{{ hop.ip || '* * *' }}</td>
             <td :class="getLatencyClass(hop.currentLatency)">
               {{ hop.currentLatency !== null ? `${hop.currentLatency.toFixed(1)} ms` : '--' }}
@@ -488,9 +554,10 @@ export default {
   }
 }
 
-.heatmap-section {
+.chart-section {
   flex: 1;
-  min-height: 300px;
+  min-height: 320px;
+  display: flex;
 }
 
 .hops-detail {
@@ -498,8 +565,16 @@ export default {
   border-radius: 12px;
   border: 1px solid var(--border-color);
   overflow: hidden;
-  max-height: 300px;
+  max-height: 320px;
   overflow-y: auto;
+}
+
+.hops-tip {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--hover-bg);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .hops-table {
@@ -534,5 +609,28 @@ export default {
   tr:hover td {
     background: var(--hover-bg);
   }
+}
+
+.hop-row {
+  cursor: pointer;
+  transition: background 0.15s;
+
+  &.selected td {
+    background: rgba(76, 175, 80, 0.12);
+    font-weight: 500;
+  }
+
+  &.selected:hover td {
+    background: rgba(76, 175, 80, 0.18);
+  }
+}
+
+.hop-color-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
 }
 </style>

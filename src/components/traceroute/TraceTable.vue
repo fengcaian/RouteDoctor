@@ -54,6 +54,9 @@ function getStatusClass(hop: HopResult): string {
           <th>{{ t('traceroute.hop') }}</th>
           <th>IP</th>
           <th>{{ t('traceroute.hostname') }}</th>
+          <th>{{ t('traceroute.asn') }}</th>
+          <th>{{ t('traceroute.country') }}</th>
+          <th>{{ t('traceroute.city') }}</th>
           <th>{{ t('traceroute.latencies') }}</th>
           <th>{{ t('traceroute.avgLatency') }}</th>
           <th>{{ t('traceroute.lossRate') }}</th>
@@ -69,13 +72,16 @@ function getStatusClass(hop: HopResult): string {
             <td>{{ hop.hop_number }}</td>
             <td>{{ hop.ip || '* * *' }}</td>
             <td class="hostname">{{ hop.hostname || '--' }}</td>
+            <td class="geo">{{ hop.geo?.asn || '--' }}</td>
+            <td class="geo">{{ hop.geo?.country || '--' }}</td>
+            <td class="geo">{{ hop.geo?.city || '--' }}</td>
             <td>{{ formatLatencies(hop.latencies) }}</td>
             <td :class="getStatusClass(hop)">{{ formatLatency(hop.avg_latency) }}</td>
             <td>{{ hop.packet_loss.toFixed(1) }}%</td>
           </tr>
           <!-- Loading row for next hop -->
           <tr v-if="isRunning" class="loading-row">
-            <td colspan="6">
+            <td colspan="9">
               <div class="loading-cell">
                 <span class="loading-dot"></span>
                 <span class="loading-dot"></span>
@@ -185,12 +191,15 @@ function getStatusClass(hop: HopResult): string {
   font-size: 13px;
 
   th, td {
-    &:nth-child(1) { width: 60px; }
-    &:nth-child(2) { width: 140px; }
-    &:nth-child(3) { width: 200px; }
-    &:nth-child(4) { width: 250px; }
-    &:nth-child(5) { width: 80px; }
-    &:nth-child(6) { width: 70px; }
+    &:nth-child(1) { width: 50px; }
+    &:nth-child(2) { width: 130px; }
+    &:nth-child(3) { width: 180px; }
+    &:nth-child(4) { width: 90px; }
+    &:nth-child(5) { width: 110px; }
+    &:nth-child(6) { width: 100px; }
+    &:nth-child(7) { width: 200px; }
+    &:nth-child(8) { width: 80px; }
+    &:nth-child(9) { width: 70px; }
   }
 }
 
@@ -245,6 +254,11 @@ td {
   &.hostname {
     font-size: 12px;
     color: var(--text-secondary);
+  }
+
+  &.geo {
+    font-size: 11px;
+    color: var(--text-muted);
   }
 
   &.good {

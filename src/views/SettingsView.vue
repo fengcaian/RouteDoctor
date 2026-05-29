@@ -132,6 +132,31 @@ function confirmReset() {
         </div>
       </div>
 
+      <!-- 系统集成 -->
+      <div class="settings-section">
+        <h3 class="section-title">{{ t('settings.systemIntegration') }}</h3>
+        <div class="setting-item">
+          <label class="setting-label">{{ t('settings.minimizeToTray') }}</label>
+          <label class="switch">
+            <input
+              type="checkbox"
+              v-model="settingsStore.settings.minimizeToTray"
+            />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <label class="setting-label">{{ t('settings.autostart') }}</label>
+          <label class="switch">
+            <input
+              type="checkbox"
+              v-model="settingsStore.settings.autostart"
+            />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
       <!-- 恢复默认 -->
       <div class="settings-section">
         <button class="reset-btn" @click="handleReset">
@@ -260,6 +285,51 @@ function confirmReset() {
   &:hover {
     background: var(--error-color, #ef4444);
     color: white;
+  }
+}
+
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 42px;
+  height: 22px;
+
+  input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  .slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--border-color);
+    transition: 0.2s;
+    border-radius: 22px;
+
+    &::before {
+      position: absolute;
+      content: '';
+      height: 16px;
+      width: 16px;
+      left: 3px;
+      bottom: 3px;
+      background: white;
+      transition: 0.2s;
+      border-radius: 50%;
+    }
+  }
+
+  input:checked + .slider {
+    background: var(--accent-color);
+  }
+
+  input:checked + .slider::before {
+    transform: translateX(20px);
   }
 }
 </style>

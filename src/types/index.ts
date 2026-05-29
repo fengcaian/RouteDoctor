@@ -71,6 +71,22 @@ export interface HopResult {
   latencies: (number | null)[]    // multiple probe latencies
   avg_latency: number | null
   packet_loss: number  // percentage
+  geo?: GeoInfo | null  // populated asynchronously after the hop is emitted
+}
+
+// GeoIP information for an IP address
+export interface GeoInfo {
+  ip: string
+  country: string | null
+  country_code: string | null
+  region: string | null
+  city: string | null
+  isp: string | null
+  org: string | null
+  asn: string | null
+  as_name: string | null
+  lat: number | null
+  lon: number | null
 }
 
 // Bandwidth test result
@@ -116,6 +132,8 @@ export interface AppSettings {
   defaultPingInterval: number
   defaultPingTimeout: number
   defaultTracerouteMaxHops: number
+  minimizeToTray: boolean
+  autostart: boolean
 }
 
 // Default settings
@@ -124,7 +142,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxHistoryDays: 30,
   defaultPingInterval: 1000,
   defaultPingTimeout: 3000,
-  defaultTracerouteMaxHops: 30
+  defaultTracerouteMaxHops: 30,
+  minimizeToTray: true,
+  autostart: false
 }
 
 // DNS 查询相关类型
@@ -163,4 +183,12 @@ export interface PublicIpInfo {
   isp: string | null
   org: string | null
   timezone: string | null
+}
+
+// Path change event (from continuous trace)
+export interface PathChangeEvent {
+  target: string
+  old: (string | null)[]
+  new: (string | null)[]
+  timestamp: number
 }

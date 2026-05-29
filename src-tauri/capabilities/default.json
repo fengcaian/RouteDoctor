@@ -5,14 +5,13 @@
   "permissions": [
     "core:default",
     "shell:allow-open",
+    "notification:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
     {
       "identifier": "shell:allow-execute",
       "allow": [
-        {
-          "name": "ping",
-          "cmd": "ping",
-          "args": true
-        },
         {
           "name": "tracert",
           "cmd": "tracert",

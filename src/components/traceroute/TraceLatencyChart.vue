@@ -1,43 +1,52 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { PingResult } from '@/types'
-import { usePingStore } from '@/stores'
+import { useContinuousTraceStore } from '@/stores/continuousTraceStore'
 
-// ========== Props / Stores / i18n ==========
 const props = defineProps<{
-  target: string
+  /** 选中要显示的跳号列表 */
+  selectedHops: number[]
 }>()
 
-const pingStore = usePingStore()
 const { t } = useI18n()
+const store = useContinuousTraceStore()
 
 // ========== 配置参数 ==========
-const MAX_DATA_POINTS = 720         // 最多保留 720 个点
 const POINT_GAP = 12                // 相邻点的横向间距（像素）
 const LABEL_STEP = 10               // 每隔多少个数据点（按 seq）显示一个 X 轴刻度
 const SLIDE_ANIM_MS = 220           // 新点滑入动画时长（ms）
-const RIGHT_PAD = 16                // 绘图区右侧内边距
-const LEFT_PAD = 48                 // 给 Y 轴标签留出的左侧内边距
-const TOP_PAD = 12                  // 顶部内边距
-const BOTTOM_PAD = 26               // 底部 X 轴时间标签高度
-const LINE_COLOR = '#4CAF50'        // 折线/正常点颜色
-const TIMEOUT_COLOR = '#F44336'     // 超时点颜色
+const RIGHT_PAD = 16
+const LEFT_PAD = 48
+const TOP_PAD = 12
+const BOTTOM_PAD = 26
+const TIMEOUT_COLOR = '#F44336'
+
+// 调色板：固定按跳号映射颜色，与表格中的色点保持一致
+const HOP_COLORS = [
+  '#4CAF50', '#2196F3', '#FF9800', '#E91E63', '#9C27B0',
+  '#00BCD4', '#FFC107', '#F44336', '#8BC34A', '#3F51B5'
+]
+function colorForHop(hopNumber: number): string {
+  return HOP_COLORS[hopNumber % HOP_COLORS.length]
+}
 
 // 主题相关颜色（onMounted 时从 CSS 变量读取，主题切换时刷新）
 let gridColor = 'rgba(127, 127, 127, 0.18)'
 let axisColor = 'rgba(127, 127, 127, 0.5)'
 let textColor = 'rgba(127, 127, 127, 0.85)'
 
-// ========== 数据 ==========
-interface Sample {
+// ========== 数据快照 ==========
+interface Frame {
   seq: number
   timestamp: number
-  latency: number | null
-  isTimeout: boolean
 }
+// 当前所有可见跳的并集 seq 时间轴
+const frames: Frame[] = []
+// 每条跳号 → seq → latency（null 表示超时；undefined 表示该跳此 seq 无样本）
+const hopValueMap = new Map<number, Map<number, number | null>>()
+// 跳号 → 显示名（用于 tooltip / legend）
+const hopNameMap = new Map<number, string>()
 
-const samples: Sample[] = []
 const totalCount = ref(0)
 const isLiveMode = ref(true)
 
@@ -52,12 +61,9 @@ let resizeObserver: ResizeObserver | null = null
 let themeObserver: MutationObserver | null = null
 
 // ========== 视口与动画 ==========
-// viewportEnd: 当前可视区域最右侧对应的数据索引（包含），实时模式下等于 samples.length - 1
 let viewportEnd = -1
-// 平滑滚动的额外像素偏移（新点滑入动画时使用，0 表示动画结束）
 let slideOffset = 0
 let slideAnimStart = 0
-// 渲染循环
 let rafId: number | null = null
 let needsRender = false
 
@@ -65,9 +71,9 @@ let needsRender = false
 let dragging = false
 let dragStartX = 0
 let dragStartViewportEnd = 0
-const hover = ref<{ x: number; y: number; sample: Sample } | null>(null)
+const hover = ref<{ x: number; frameIdx: number } | null>(null)
 
-// ========== 工具：保证 canvas 尺寸与 DPR 匹配 ==========
+// ========== Resize / 主题色 ==========
 function resizeCanvas() {
   const canvas = canvasRef.value
   const wrapper = wrapperRef.value
@@ -87,7 +93,6 @@ function resizeCanvas() {
   scheduleRender()
 }
 
-// 从 CSS 变量与计算样式中读取主题色，使坐标轴在明/暗主题下都清晰可见
 function refreshThemeColors() {
   const wrapper = wrapperRef.value
   if (!wrapper) return
@@ -97,14 +102,12 @@ function refreshThemeColors() {
   const primary = styles.getPropertyValue('--text-primary').trim()
   if (muted) textColor = muted
   if (border) gridColor = border
-  // 轴线颜色：取主文本色的弱化版本，保证在亮/暗主题下都有足够对比
   if (primary) {
     const rgb = parseColorToRGB(primary)
     if (rgb) axisColor = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.45)`
   }
 }
 
-// 解析 #RRGGBB / #RGB / rgb()/rgba() 为 RGB 分量
 function parseColorToRGB(color: string): { r: number; g: number; b: number } | null {
   if (!color) return null
   const c = color.trim()
@@ -121,48 +124,75 @@ function parseColorToRGB(color: string): { r: number; g: number; b: number } | n
   return null
 }
 
-// ========== 计算可视点数量 ==========
-function getVisibleCapacity(): number {
-  const plotWidth = cssWidth - LEFT_PAD - RIGHT_PAD
-  if (plotWidth <= 0) return 0
-  // 可见点数：让最右侧点正好落在 cssWidth - RIGHT_PAD 上
-  return Math.floor(plotWidth / POINT_GAP) + 1
+// ========== 从 store 重建数据快照 ==========
+function rebuildSnapshot(): { newMaxSeq: number; growBy: number } {
+  // 收集选中跳的历史
+  const histories = props.selectedHops
+    .map(n => store.hopHistories.get(n))
+    .filter((h): h is NonNullable<typeof h> => !!h && h.samples.length > 0)
+
+  hopValueMap.clear()
+  hopNameMap.clear()
+
+  // 收集所有出现过的 seq
+  const seqSet = new Set<number>()
+  const seqToTime = new Map<number, number>()
+  for (const h of histories) {
+    const valueMap = new Map<number, number | null>()
+    for (const s of h.samples) {
+      seqSet.add(s.seq)
+      if (!seqToTime.has(s.seq)) seqToTime.set(s.seq, s.timestamp)
+      valueMap.set(s.seq, s.is_timeout ? null : s.latency_ms)
+    }
+    hopValueMap.set(h.hop_number, valueMap)
+    hopNameMap.set(h.hop_number, `#${h.hop_number} ${h.ip}`)
+  }
+
+  const sortedSeqs = Array.from(seqSet).sort((a, b) => a - b)
+  const oldLength = frames.length
+  const oldLastSeq = oldLength > 0 ? frames[oldLength - 1].seq : -Infinity
+
+  frames.length = 0
+  for (const seq of sortedSeqs) {
+    frames.push({ seq, timestamp: seqToTime.get(seq) ?? Date.now() })
+  }
+
+  totalCount.value = frames.length
+  const newMaxSeq = frames.length > 0 ? frames[frames.length - 1].seq : -Infinity
+  const growBy = oldLastSeq === -Infinity
+    ? frames.length
+    : Math.max(0, newMaxSeq - oldLastSeq)
+
+  return { newMaxSeq, growBy }
 }
 
-// ========== 添加数据 ==========
-function addData(result: PingResult) {
-  samples.push({
-    seq: result.seq,
-    timestamp: result.timestamp,
-    latency: result.is_timeout ? null : result.latency_ms,
-    isTimeout: result.is_timeout
-  })
-
-  // 维持最大长度
-  if (samples.length > MAX_DATA_POINTS) {
-    const removeCount = samples.length - MAX_DATA_POINTS
-    samples.splice(0, removeCount)
-    if (!isLiveMode.value) {
-      // 历史模式下保持 viewportEnd 对应的样本不变
-      viewportEnd = Math.max(-1, viewportEnd - removeCount)
-    }
+// ========== 添加数据时的动画处理 ==========
+function onSnapshotChanged(growBy: number) {
+  if (frames.length === 0) {
+    viewportEnd = -1
+    slideOffset = 0
+    return
   }
-
-  totalCount.value = samples.length
-
   if (isLiveMode.value) {
-    viewportEnd = samples.length - 1
-    // 启动滑入动画：新点从右侧外面滑入
-    slideOffset = POINT_GAP
-    slideAnimStart = performance.now()
+    viewportEnd = frames.length - 1
+    if (growBy === 1) {
+      slideOffset = POINT_GAP
+      slideAnimStart = performance.now()
+    } else {
+      // 多帧或初始化：直接显示，不做动画
+      slideOffset = 0
+    }
+  } else {
+    // 历史模式：保持 viewportEnd 不超过最大
+    if (viewportEnd >= frames.length) viewportEnd = frames.length - 1
   }
-
-  scheduleRender()
 }
 
 // ========== 重置 ==========
 function reset() {
-  samples.length = 0
+  frames.length = 0
+  hopValueMap.clear()
+  hopNameMap.clear()
   totalCount.value = 0
   viewportEnd = -1
   slideOffset = 0
@@ -180,53 +210,52 @@ function scheduleRender() {
 
 function renderFrame() {
   rafId = null
-  // 推进滑动动画
   if (slideOffset > 0) {
     const elapsed = performance.now() - slideAnimStart
     const progress = Math.min(1, elapsed / SLIDE_ANIM_MS)
-    // ease-out
     const eased = 1 - Math.pow(1 - progress, 2)
     slideOffset = POINT_GAP * (1 - eased)
-    if (progress < 1) {
-      // 持续动画
-      needsRender = true
-    } else {
-      slideOffset = 0
-    }
+    if (progress < 1) needsRender = true
+    else slideOffset = 0
   }
-
   if (needsRender) {
     needsRender = false
     draw()
   }
-
   if (slideOffset > 0) {
     rafId = requestAnimationFrame(renderFrame)
   }
 }
 
-// ========== 计算 Y 轴范围 ==========
+// ========== 视口范围 ==========
+function getVisibleCapacity(): number {
+  const plotWidth = cssWidth - LEFT_PAD - RIGHT_PAD
+  if (plotWidth <= 0) return 0
+  return Math.floor(plotWidth / POINT_GAP) + 1
+}
+
 function getVisibleRange(): { startIdx: number; endIdx: number } {
-  if (samples.length === 0 || viewportEnd < 0) {
+  if (frames.length === 0 || viewportEnd < 0) {
     return { startIdx: 0, endIdx: -1 }
   }
   const capacity = getVisibleCapacity()
-  const endIdx = Math.min(viewportEnd, samples.length - 1)
+  const endIdx = Math.min(viewportEnd, frames.length - 1)
   const startIdx = Math.max(0, endIdx - capacity + 1)
   return { startIdx, endIdx }
 }
 
+// ========== Y 轴范围（取所有可见跳的最大延迟） ==========
 function computeYAxis(startIdx: number, endIdx: number): { yMax: number; tickStep: number } {
   let max = 0
   for (let i = startIdx; i <= endIdx; i++) {
-    const v = samples[i]?.latency
-    if (v != null && v > max) max = v
+    const seq = frames[i].seq
+    for (const valueMap of hopValueMap.values()) {
+      const v = valueMap.get(seq)
+      if (v != null && v > max) max = v
+    }
   }
-  // 至少展示 100ms 的范围
   if (max < 100) max = 100
-  // 向上取整到合适的整数刻度
   const niceMax = niceCeil(max * 1.15)
-  // 自动选择刻度间距：5 个刻度
   const tickStep = niceCeil(niceMax / 5)
   const yMax = tickStep * 5
   return { yMax, tickStep }
@@ -245,20 +274,18 @@ function niceCeil(v: number): number {
   return nice * base
 }
 
-// ========== 绘制主流程 ==========
+// ========== 绘制 ==========
 function draw() {
   if (!ctx || cssWidth === 0 || cssHeight === 0) return
   const c = ctx
   c.clearRect(0, 0, cssWidth, cssHeight)
 
-  // 绘图区
   const plotLeft = LEFT_PAD
   const plotRight = cssWidth - RIGHT_PAD
   const plotTop = TOP_PAD
   const plotBottom = cssHeight - BOTTOM_PAD
   const plotWidth = plotRight - plotLeft
   const plotHeight = plotBottom - plotTop
-
   if (plotWidth <= 0 || plotHeight <= 0) return
 
   const { startIdx, endIdx } = getVisibleRange()
@@ -267,14 +294,13 @@ function draw() {
     ? computeYAxis(startIdx, endIdx)
     : { yMax: 100, tickStep: 20 }
 
-  // ===== 1. 网格线 + Y 轴标签 =====
+  // 1. 网格 + Y 轴标签
   c.strokeStyle = gridColor
   c.lineWidth = 1
   c.fillStyle = textColor
   c.font = '10px system-ui, -apple-system, sans-serif'
   c.textAlign = 'right'
   c.textBaseline = 'middle'
-
   for (let val = 0; val <= yMax; val += tickStep) {
     const y = plotBottom - (val / yMax) * plotHeight
     c.beginPath()
@@ -283,47 +309,34 @@ function draw() {
     c.stroke()
     c.fillText(`${val}`, plotLeft - 6, y)
   }
-
-  // Y 轴单位（ms）
   c.textAlign = 'left'
   c.textBaseline = 'top'
-  c.fillStyle = textColor
   c.fillText('ms', plotLeft - 24, 2)
 
-  // ===== 2. 坐标轴 =====
+  // 2. 坐标轴
   c.strokeStyle = axisColor
-  c.lineWidth = 1
   c.beginPath()
-  // X 轴
   c.moveTo(plotLeft, plotBottom + 0.5)
   c.lineTo(plotRight, plotBottom + 0.5)
-  // Y 轴
   c.moveTo(plotLeft + 0.5, plotTop)
   c.lineTo(plotLeft + 0.5, plotBottom)
   c.stroke()
 
-  if (!hasData) {
-    return
-  }
+  if (!hasData) return
 
-  // ===== 3. 计算每个可见样本的 x 坐标 =====
-  // 最右侧的可视位置（即 endIdx 这个点的位置，未应用 slideOffset 时）
+  // 3. 折线（每个跳一条）
   const rightX = plotRight
-  // 应用滑动偏移（实时模式下新点从右外滑入，整体向左滑）
   const offset = isLiveMode.value ? slideOffset : 0
 
-  // ===== 3.5 垂直网格线 + X 轴刻度位置（按 seq 锚定，每 LABEL_STEP 个点一个刻度） =====
-  // 跟随数据滑动，避免传送带移动时刻度抖动
+  // 3.5 垂直网格线 + X 轴刻度位置（按 seq 锚定，每 LABEL_STEP 个点一个刻度）
   const labelIndices: number[] = []
   for (let i = startIdx; i <= endIdx; i++) {
-    if (samples[i].seq % LABEL_STEP === 0) labelIndices.push(i)
+    if (frames[i].seq % LABEL_STEP === 0) labelIndices.push(i)
   }
-  // 数据点过少时，至少显示首尾两个刻度
   if (labelIndices.length === 0 && endIdx >= startIdx) {
     labelIndices.push(endIdx)
     if (endIdx - startIdx >= LABEL_STEP) labelIndices.unshift(startIdx)
   }
-
   c.strokeStyle = gridColor
   c.lineWidth = 1
   for (const i of labelIndices) {
@@ -336,82 +349,88 @@ function draw() {
     c.stroke()
   }
 
-  // 用 path 来 clip，避免数据画到 plot 外
   c.save()
   c.beginPath()
   c.rect(plotLeft, plotTop - 2, plotWidth, plotHeight + 4)
   c.clip()
 
-  // ===== 4. 折线 =====
-  c.strokeStyle = LINE_COLOR
-  c.lineWidth = 2
-  c.lineJoin = 'round'
-  c.lineCap = 'round'
+  // 按选中顺序绘制（保证颜色顺序与表格一致）
+  for (const hopNumber of props.selectedHops) {
+    const valueMap = hopValueMap.get(hopNumber)
+    if (!valueMap) continue
+    const color = colorForHop(hopNumber)
 
-  let pathStarted = false
-  for (let i = startIdx; i <= endIdx; i++) {
-    const s = samples[i]
-    if (s.isTimeout || s.latency == null) {
-      pathStarted = false  // 超时点断开折线
-      continue
-    }
-    const x = rightX - (endIdx - i) * POINT_GAP + offset
-    const y = plotBottom - (s.latency / yMax) * plotHeight
-    if (!pathStarted) {
-      c.beginPath()
-      c.moveTo(x, y)
-      pathStarted = true
-    } else {
-      c.lineTo(x, y)
-    }
-  }
-  if (pathStarted) c.stroke()
-
-  // ===== 5. 数据点 =====
-  // 仅在可见点不太密时画点（避免太密）
-  const drawDots = POINT_GAP >= 8
-  if (drawDots) {
+    // 折线
+    c.strokeStyle = color
+    c.lineWidth = 2
+    c.lineJoin = 'round'
+    c.lineCap = 'round'
+    let pathStarted = false
     for (let i = startIdx; i <= endIdx; i++) {
-      const s = samples[i]
+      const seq = frames[i].seq
+      const v = valueMap.get(seq)
+      if (v === undefined || v === null) {
+        pathStarted = false
+        continue
+      }
       const x = rightX - (endIdx - i) * POINT_GAP + offset
-      if (s.isTimeout || s.latency == null) {
-        // 超时画 X 标记
-        const y = plotBottom - 2
-        c.strokeStyle = TIMEOUT_COLOR
-        c.lineWidth = 1.5
+      const y = plotBottom - (v / yMax) * plotHeight
+      if (!pathStarted) {
         c.beginPath()
-        c.moveTo(x - 3, y - 3)
-        c.lineTo(x + 3, y + 3)
-        c.moveTo(x + 3, y - 3)
-        c.lineTo(x - 3, y + 3)
-        c.stroke()
+        c.moveTo(x, y)
+        pathStarted = true
       } else {
-        const y = plotBottom - (s.latency / yMax) * plotHeight
-        c.fillStyle = LINE_COLOR
-        c.beginPath()
-        c.arc(x, y, 2.5, 0, Math.PI * 2)
-        c.fill()
+        c.lineTo(x, y)
+      }
+    }
+    if (pathStarted) c.stroke()
+
+    // 数据点（仅在间隔够大时绘制）
+    if (POINT_GAP >= 8) {
+      for (let i = startIdx; i <= endIdx; i++) {
+        const seq = frames[i].seq
+        const v = valueMap.get(seq)
+        if (v === undefined) continue
+        const x = rightX - (endIdx - i) * POINT_GAP + offset
+        if (v === null) {
+          // 超时点用 X 标记（用该跳颜色但带红框）
+          const y = plotBottom - 2
+          c.strokeStyle = TIMEOUT_COLOR
+          c.lineWidth = 1.5
+          c.beginPath()
+          c.moveTo(x - 3, y - 3)
+          c.lineTo(x + 3, y + 3)
+          c.moveTo(x + 3, y - 3)
+          c.lineTo(x - 3, y + 3)
+          c.stroke()
+        } else {
+          const y = plotBottom - (v / yMax) * plotHeight
+          c.fillStyle = color
+          c.beginPath()
+          c.arc(x, y, 2.5, 0, Math.PI * 2)
+          c.fill()
+        }
       }
     }
   }
 
   c.restore()
 
-  // ===== 6. X 轴时间标签（与上面的垂直网格线对齐） =====
+  // 4. X 轴时间标签（与上面的垂直网格线对齐）
   c.fillStyle = textColor
   c.textAlign = 'center'
   c.textBaseline = 'top'
   for (const i of labelIndices) {
-    const s = samples[i]
+    const f = frames[i]
     const x = rightX - (endIdx - i) * POINT_GAP + offset
     if (x < plotLeft - 1 || x > plotRight + 1) continue
-    const d = new Date(s.timestamp)
+    const d = new Date(f.timestamp)
     const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
     c.fillText(time, x, plotBottom + 4)
   }
 
-  // ===== 7. 实时模式时右侧"前沿"竖向高亮线 =====
-  if (isLiveMode.value && samples.length > 0) {
+  // 5. 实时模式右沿虚线
+  if (isLiveMode.value && frames.length > 0) {
     c.strokeStyle = 'rgba(76, 175, 80, 0.25)'
     c.lineWidth = 1
     c.setLineDash([3, 3])
@@ -422,10 +441,10 @@ function draw() {
     c.setLineDash([])
   }
 
-  // ===== 8. Hover 提示线 =====
+  // 6. Hover 高亮
   const h = hover.value
-  if (h) {
-    c.strokeStyle = 'rgba(255, 255, 255, 0.25)'
+  if (h && h.frameIdx >= startIdx && h.frameIdx <= endIdx) {
+    c.strokeStyle = 'rgba(127, 127, 127, 0.4)'
     c.lineWidth = 1
     c.setLineDash([2, 3])
     c.beginPath()
@@ -433,13 +452,19 @@ function draw() {
     c.lineTo(h.x + 0.5, plotBottom)
     c.stroke()
     c.setLineDash([])
-    if (!h.sample.isTimeout && h.sample.latency != null) {
-      const y = plotBottom - (h.sample.latency / yMax) * plotHeight
+    // 每条跳在 hover 处放大点
+    const seq = frames[h.frameIdx].seq
+    for (const hopNumber of props.selectedHops) {
+      const valueMap = hopValueMap.get(hopNumber)
+      const v = valueMap?.get(seq)
+      if (v == null) continue
+      const y = plotBottom - (v / yMax) * plotHeight
+      const color = colorForHop(hopNumber)
       c.fillStyle = '#fff'
       c.beginPath()
       c.arc(h.x, y, 4, 0, Math.PI * 2)
       c.fill()
-      c.fillStyle = LINE_COLOR
+      c.fillStyle = color
       c.beginPath()
       c.arc(h.x, y, 2.5, 0, Math.PI * 2)
       c.fill()
@@ -451,9 +476,9 @@ function pad2(n: number): string {
   return n.toString().padStart(2, '0')
 }
 
-// ========== 鼠标事件 ==========
+// ========== 鼠标交互 ==========
 function onMouseDown(e: MouseEvent) {
-  if (samples.length === 0) return
+  if (frames.length === 0) return
   dragging = true
   dragStartX = e.clientX
   dragStartViewportEnd = viewportEnd
@@ -470,15 +495,13 @@ function onMouseMove(e: MouseEvent) {
 
   if (dragging) {
     const dx = e.clientX - dragStartX
-    // 拖动：每 POINT_GAP 像素 = 1 个数据点
     const movePoints = Math.round(dx / POINT_GAP)
     let newEnd = dragStartViewportEnd - movePoints
     const capacity = getVisibleCapacity()
-    const minEnd = Math.min(samples.length - 1, capacity - 1)
-    newEnd = Math.max(minEnd, Math.min(samples.length - 1, newEnd))
+    const minEnd = Math.min(frames.length - 1, capacity - 1)
+    newEnd = Math.max(minEnd, Math.min(frames.length - 1, newEnd))
     viewportEnd = newEnd
-    // 进入历史模式（除非用户拖回最右）
-    if (newEnd >= samples.length - 1) {
+    if (newEnd >= frames.length - 1) {
       isLiveMode.value = true
     } else {
       isLiveMode.value = false
@@ -488,10 +511,12 @@ function onMouseMove(e: MouseEvent) {
     return
   }
 
-  // 没有拖动：处理 hover
   const { startIdx, endIdx } = getVisibleRange()
   if (endIdx < startIdx) {
-    hover.value = null
+    if (hover.value !== null) {
+      hover.value = null
+      scheduleRender()
+    }
     return
   }
   const plotLeft = LEFT_PAD
@@ -503,7 +528,6 @@ function onMouseMove(e: MouseEvent) {
     }
     return
   }
-  // 找最近的点
   const offset = isLiveMode.value ? slideOffset : 0
   const rightX = plotRight
   let bestIdx = endIdx
@@ -523,9 +547,8 @@ function onMouseMove(e: MouseEvent) {
     }
     return
   }
-  const s = samples[bestIdx]
   const x = rightX - (endIdx - bestIdx) * POINT_GAP + offset
-  hover.value = { x, y: localY, sample: s }
+  hover.value = { x, frameIdx: bestIdx }
   scheduleRender()
 }
 
@@ -542,19 +565,17 @@ function onMouseLeave() {
 }
 
 function onWheel(e: WheelEvent) {
-  if (samples.length === 0) return
-  // 滚轮平移视图
+  if (frames.length === 0) return
   const delta = e.deltaY !== 0 ? e.deltaY : e.deltaX
   if (delta === 0) return
   e.preventDefault()
-  // 向上滚动 -> 看历史（viewportEnd 减小）
-  const movePoints = delta > 0 ? -2 : 2  // 向下滚动看更新的（向右）
+  const movePoints = delta > 0 ? -2 : 2
   let newEnd = viewportEnd + movePoints
   const capacity = getVisibleCapacity()
-  const minEnd = Math.min(samples.length - 1, capacity - 1)
-  newEnd = Math.max(minEnd, Math.min(samples.length - 1, newEnd))
+  const minEnd = Math.min(frames.length - 1, capacity - 1)
+  newEnd = Math.max(minEnd, Math.min(frames.length - 1, newEnd))
   viewportEnd = newEnd
-  if (newEnd >= samples.length - 1) {
+  if (newEnd >= frames.length - 1) {
     isLiveMode.value = true
   } else {
     isLiveMode.value = false
@@ -565,84 +586,105 @@ function onWheel(e: WheelEvent) {
 
 function backToLive() {
   isLiveMode.value = true
-  viewportEnd = samples.length - 1
+  viewportEnd = frames.length - 1
   slideOffset = 0
   scheduleRender()
 }
 
-// ========== Tooltip 计算 ==========
+// ========== Tooltip 内容 ==========
 const tooltipStyle = computed(() => {
   const h = hover.value
   if (!h) return { display: 'none' } as const
-  // 鼠标右侧或左侧显示
   const showLeft = h.x > cssWidth / 2
   return {
     display: 'block',
     left: showLeft ? `${h.x - 12}px` : `${h.x + 12}px`,
-    top: `${Math.max(8, h.y - 12)}px`,
+    top: `${TOP_PAD + 8}px`,
     transform: showLeft ? 'translate(-100%, 0)' : 'none'
   } as const
 })
 
-const tooltipText = computed(() => {
+interface TooltipRow {
+  hop: number
+  name: string
+  color: string
+  value: string
+  timeout: boolean
+}
+
+const tooltipData = computed(() => {
   const h = hover.value
-  if (!h) return { time: '', value: '', timeout: false }
-  const s = h.sample
-  const d = new Date(s.timestamp)
+  if (!h || h.frameIdx < 0 || h.frameIdx >= frames.length) {
+    return { time: '', rows: [] as TooltipRow[] }
+  }
+  const f = frames[h.frameIdx]
+  const d = new Date(f.timestamp)
   const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
-  if (s.isTimeout || s.latency == null) {
-    return { time, value: '', timeout: true }
+  const rows: TooltipRow[] = []
+  for (const hopNumber of props.selectedHops) {
+    const valueMap = hopValueMap.get(hopNumber)
+    if (!valueMap) continue
+    const v = valueMap.get(f.seq)
+    if (v === undefined) continue
+    rows.push({
+      hop: hopNumber,
+      name: hopNameMap.get(hopNumber) ?? `#${hopNumber}`,
+      color: colorForHop(hopNumber),
+      value: v === null ? '' : `${v.toFixed(1)} ms`,
+      timeout: v === null
+    })
   }
-  return { time, value: `${s.latency.toFixed(1)} ms`, timeout: false }
+  return { time, rows }
 })
 
-// ========== 监听 store 变化 ==========
-let lastSeq = -1
-const unsubscribe = pingStore.$subscribe(() => {
-  const results = pingStore.getResults(props.target)
-  if (results.length === 0) {
-    reset()
-    lastSeq = -1
-    return
+const hasData = computed(() => totalCount.value > 0)
+
+// ========== 监听 store 数据变化 ==========
+// 用所有选中跳样本数之和作为变更信号（hopHistories 是 Map，每次 addHopResult 会重建引用）
+const totalSamples = computed(() => {
+  let s = 0
+  for (const n of props.selectedHops) {
+    const h = store.hopHistories.get(n)
+    if (h) s += h.samples.length
   }
-  const newResults = results.filter(r => r.seq > lastSeq)
-  if (newResults.length === 0) return
-  for (const r of newResults) {
-    addData(r)
-    if (r.seq > lastSeq) lastSeq = r.seq
-  }
+  return s
 })
 
-// 监听 target 变化
-watch(() => props.target, () => {
-  reset()
-  lastSeq = -1
-  nextTick(() => {
-    const results = pingStore.getResults(props.target)
-    if (results.length > 0) {
-      for (const r of results) {
-        addData(r)
-        if (r.seq > lastSeq) lastSeq = r.seq
-      }
+watch(totalSamples, () => {
+  const { growBy } = rebuildSnapshot()
+  onSnapshotChanged(growBy)
+  scheduleRender()
+})
+
+// 选中跳变化时回到实时
+watch(
+  () => props.selectedHops.join(','),
+  () => {
+    isLiveMode.value = true
+    viewportEnd = -1
+    slideOffset = 0
+    hover.value = null
+    const { growBy } = rebuildSnapshot()
+    // 选择切换不做滑入动画
+    if (frames.length > 0) {
+      viewportEnd = frames.length - 1
     }
-  })
-})
+    void growBy
+    slideOffset = 0
+    scheduleRender()
+  }
+)
 
 // ========== 生命周期 ==========
 onMounted(() => {
   const canvas = canvasRef.value
-  if (canvas) {
-    ctx = canvas.getContext('2d')
-  }
-  // 初始尺寸 + 主题色
+  if (canvas) ctx = canvas.getContext('2d')
   resizeCanvas()
   refreshThemeColors()
-  // 监听容器尺寸变化
   if (wrapperRef.value && typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver(() => resizeCanvas())
     resizeObserver.observe(wrapperRef.value)
   }
-  // 监听主题切换（document.documentElement 的 data-theme 属性变化）
   if (typeof MutationObserver !== 'undefined') {
     themeObserver = new MutationObserver(() => {
       refreshThemeColors()
@@ -653,16 +695,12 @@ onMounted(() => {
       attributeFilter: ['data-theme', 'class']
     })
   }
-  // 加载已有数据
-  const results = pingStore.getResults(props.target)
-  if (results.length > 0) {
-    for (const r of results) {
-      addData(r)
-      if (r.seq > lastSeq) lastSeq = r.seq
-    }
-  } else {
-    scheduleRender()
+  // 初始加载已有数据
+  rebuildSnapshot()
+  if (frames.length > 0) {
+    viewportEnd = frames.length - 1
   }
+  scheduleRender()
 })
 
 onUnmounted(() => {
@@ -678,12 +716,22 @@ onUnmounted(() => {
     themeObserver.disconnect()
     themeObserver = null
   }
-  unsubscribe()
+})
+
+// 暴露给模板
+const legendItems = computed(() => {
+  return props.selectedHops
+    .filter(n => hopValueMap.has(n) || true) // 即使无数据也显示
+    .map(n => ({
+      hop: n,
+      color: colorForHop(n),
+      name: hopNameMap.get(n) ?? `#${n}`
+    }))
 })
 </script>
 
 <template>
-  <div class="ping-chart">
+  <div class="trace-latency-chart">
     <!-- 顶部状态条 -->
     <div class="chart-toolbar">
       <div class="status-group">
@@ -691,17 +739,29 @@ onUnmounted(() => {
         <span class="mode-text">
           {{ isLiveMode ? t('traceLatency.modeLive') : t('traceLatency.modeHistory') }}
         </span>
-        <span v-if="totalCount > 0" class="count-text">
+        <span class="count-text" v-if="hasData">
           {{ t('traceLatency.samples') }}: {{ totalCount }}
         </span>
       </div>
       <button
-        v-if="!isLiveMode && totalCount > 0"
+        v-if="!isLiveMode && hasData"
         class="back-live-btn"
         @click="backToLive"
       >
         ⏵ {{ t('traceLatency.backToLive') }}
       </button>
+    </div>
+
+    <!-- 图例 -->
+    <div v-if="legendItems.length > 1" class="chart-legend">
+      <div
+        v-for="item in legendItems"
+        :key="item.hop"
+        class="legend-item"
+      >
+        <span class="legend-dot" :style="{ background: item.color }"></span>
+        <span class="legend-name">{{ item.name }}</span>
+      </div>
     </div>
 
     <!-- Canvas 区域 -->
@@ -718,35 +778,39 @@ onUnmounted(() => {
 
       <!-- Tooltip -->
       <div class="tooltip" :style="tooltipStyle">
-        <div class="tooltip-time">{{ tooltipText.time }}</div>
-        <div v-if="tooltipText.timeout" class="tooltip-timeout">
-          {{ t('ping.timeoutText') }}
-        </div>
-        <div v-else class="tooltip-value">
-          <span class="dot"></span>
-          <span>{{ t('ping.latency') }}: {{ tooltipText.value }}</span>
+        <div class="tooltip-time">{{ tooltipData.time }}</div>
+        <div
+          v-for="row in tooltipData.rows"
+          :key="row.hop"
+          class="tooltip-row"
+        >
+          <span class="dot" :style="{ background: row.color }"></span>
+          <span class="name">{{ row.name }}</span>
+          <span v-if="row.timeout" class="timeout">{{ t('traceLatency.timeout') }}</span>
+          <span v-else class="value">{{ row.value }}</span>
         </div>
       </div>
 
       <!-- 空状态 -->
-      <div v-if="totalCount === 0" class="empty-chart">
-        <p>{{ t('ping.noData') }}</p>
+      <div v-if="!hasData" class="empty">
+        <p>{{ t('traceLatency.empty') }}</p>
+        <p class="hint">{{ t('traceLatency.emptyHint') }}</p>
       </div>
     </div>
   </div>
 </template>
 
 <style lang="scss" scoped>
-.ping-chart {
+.trace-latency-chart {
   width: 100%;
-  height: 280px;
+  height: 100%;
+  min-height: 320px;
   background: var(--card-bg);
   border-radius: 12px;
   border: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  min-width: 0;
 }
 
 .chart-toolbar {
@@ -808,6 +872,30 @@ onUnmounted(() => {
   &:hover { background: rgba(76, 175, 80, 0.25); }
 }
 
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-dot {
+  width: 10px;
+  height: 4px;
+  border-radius: 2px;
+}
+
 .canvas-wrapper {
   flex: 1;
   min-height: 0;
@@ -846,33 +934,48 @@ onUnmounted(() => {
     color: #ccc;
   }
 
-  .tooltip-value {
+  .tooltip-row {
     display: flex;
     align-items: center;
     gap: 6px;
+    line-height: 1.6;
 
     .dot {
       width: 8px;
       height: 8px;
       border-radius: 2px;
-      background: #4CAF50;
     }
-  }
 
-  .tooltip-timeout {
-    color: #F44336;
-    font-weight: 600;
+    .name {
+      flex: 1;
+      margin-right: 8px;
+    }
+
+    .value {
+      font-weight: 600;
+    }
+
+    .timeout {
+      color: #F44336;
+      font-weight: 600;
+    }
   }
 }
 
-.empty-chart {
+.empty {
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
-  font-size: 12px;
-  pointer-events: none;
+  font-size: 13px;
+  gap: 4px;
+
+  .hint {
+    font-size: 11px;
+    opacity: 0.7;
+  }
 }
 </style>

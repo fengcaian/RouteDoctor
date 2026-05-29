@@ -1,11 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { ContinuousTraceHopResult, PathDiscovered } from '@/composables/useContinuousTrace'
+import type { GeoInfo } from '@/types'
 
 export interface HopInfo {
   hop_number: number
   ip: string | null
   hostname: string | null
+  geo?: GeoInfo | null
 }
 
 export interface HopSample {
@@ -164,6 +166,26 @@ export const useContinuousTraceStore = defineStore('continuousTrace', () => {
     isDiscovering.value = false
   }
 
+  /** Update a hop with reverse-DNS hostname and/or GeoIP info (delivered asynchronously by the backend). */
+  function updateHopGeo(hopNumber: number, geo: GeoInfo | null, hostname?: string | null) {
+    const hopIdx = hops.value.findIndex(h => h.hop_number === hopNumber)
+    if (hopIdx >= 0) {
+      const next = [...hops.value]
+      next[hopIdx] = {
+        ...next[hopIdx],
+        geo: geo ?? next[hopIdx].geo,
+        hostname: hostname ?? next[hopIdx].hostname,
+      }
+      hops.value = next
+    }
+
+    const hist = hopHistories.value.get(hopNumber)
+    if (hist && hostname && !hist.hostname) {
+      hist.hostname = hostname
+      hopHistories.value = new Map(hopHistories.value)
+    }
+  }
+
   function resetStore() {
     isRunning.value = false
     isDiscovering.value = false
@@ -184,6 +206,7 @@ export const useContinuousTraceStore = defineStore('continuousTrace', () => {
     getHeatmapData,
     startMonitoring,
     stopMonitoring,
+    updateHopGeo,
     resetStore
   }
 })

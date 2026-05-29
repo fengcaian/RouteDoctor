@@ -1,7 +1,8 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import type { TracerouteResult, HopResult, ProbeMethod } from '@/types'
+import type { TracerouteResult, HopResult, ProbeMethod, GeoInfo } from '@/types'
+import { useTracerouteStore } from '@/stores'
 
 export function useTraceroute() {
   const isRunning = ref(false)
@@ -58,12 +59,22 @@ export function useTracerouteListener(
 ) {
   let unlistenHop: (() => void) | null = null
   let unlistenComplete: (() => void) | null = null
+  let unlistenGeo: (() => void) | null = null
+  const traceStore = useTracerouteStore()
 
   async function startListening() {
     unlistenHop = await listen<HopResult & { target: string }>('trace-hop', (event) => {
       console.log('Received trace-hop:', event.payload)
       onHop(event.payload)
     })
+
+    unlistenGeo = await listen<{ target: string; hop_number: number; ip: string; geo: GeoInfo }>(
+      'trace-hop-geo',
+      (event) => {
+        const { target, hop_number, geo } = event.payload
+        traceStore.updateHopGeo(target, hop_number, geo)
+      }
+    )
 
     if (onComplete) {
       unlistenComplete = await listen<TracerouteResult>('trace-complete', (event) => {
@@ -81,5 +92,6 @@ export function useTracerouteListener(
   onUnmounted(() => {
     unlistenHop?.()
     unlistenComplete?.()
+    unlistenGeo?.()
   })
 }

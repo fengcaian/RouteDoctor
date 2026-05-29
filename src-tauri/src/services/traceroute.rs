@@ -354,19 +354,33 @@ async fn process_hop(
     hop: HopResult,
     result: &mut TracerouteResult,
 ) {
-    // Try to get hostname via reverse DNS
-    if hop.ip.is_some() {
-        let ip_str = hop.ip.clone().unwrap();
+    // Resolve hostname and GeoIP in parallel
+    if let Some(ref ip_str) = hop.ip {
         if let Ok(ip) = ip_str.parse::<IpAddr>() {
-            if let Ok(Some(hostname)) = reverse_lookup(&ip).await {
-                let hop_with_hostname = HopResult {
-                    hostname: Some(hostname),
-                    ..hop.clone()
-                };
-                result.hops.push(hop_with_hostname.clone());
-                emit_hop(app_handle, target, &hop_with_hostname);
-                return;
+            let (hostname_res, geo_res) = tokio::join!(
+                reverse_lookup(&ip),
+                crate::services::geoip::lookup_one(&ip)
+            );
+
+            let hostname = hostname_res.ok().flatten();
+
+            // Emit geo info to frontend separately (so the hop event is not delayed)
+            if let Some(geo) = geo_res {
+                let _ = app_handle.emit("trace-hop-geo", serde_json::json!({
+                    "target": target,
+                    "hop_number": hop.hop_number,
+                    "ip": ip_str,
+                    "geo": geo,
+                }));
             }
+
+            let hop_with_hostname = HopResult {
+                hostname,
+                ..hop.clone()
+            };
+            result.hops.push(hop_with_hostname.clone());
+            emit_hop(app_handle, target, &hop_with_hostname);
+            return;
         }
     }
 

@@ -1,17 +1,11 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import VChart from 'vue-echarts'
-import { use } from 'echarts/core'
-import { HeatmapChart } from 'echarts/charts'
-import { GridComponent, TooltipComponent, VisualMapComponent, DataZoomComponent } from 'echarts/components'
-import { CanvasRenderer } from 'echarts/renderers'
+import TraceLatencyChart from '@/components/traceroute/TraceLatencyChart.vue'
 import { useContinuousTrace, useContinuousTraceListener } from '@/composables/useContinuousTrace'
 import { useContinuousTraceStore } from '@/stores/continuousTraceStore'
 import { useToast } from '@/composables/useToast'
 import type { ContinuousTraceHopResult, PathDiscovered } from '@/composables/useContinuousTrace'
-
-use([HeatmapChart, GridComponent, TooltipComponent, VisualMapComponent, DataZoomComponent, CanvasRenderer])
 
 const { t } = useI18n()
 const store = useContinuousTraceStore()
@@ -23,6 +17,62 @@ const pingInterval = ref(2000)
 const maxHops = ref(30)
 const timeoutMs = ref(3000)
 const probeMethod = ref<'icmp' | 'udp' | 'tcp'>('icmp')
+
+// 选中显示在折线图上的跳号集合
+const selectedHopNumbers = ref<number[]>([])
+
+// 路径发现完成后默认选中最后一跳（最终目标）
+watch(
+  () => store.hops.length,
+  (len) => {
+    if (!len) {
+      selectedHopNumbers.value = []
+      return
+    }
+    // 仅当当前选中失效时才重置为最后一跳
+    const validNumbers = store.hops.filter(h => h.ip).map(h => h.hop_number)
+    const stillValid = selectedHopNumbers.value.filter(n => validNumbers.includes(n))
+    if (stillValid.length === 0) {
+      const lastValid = [...store.hops].reverse().find(h => h.ip)
+      if (lastValid) {
+        selectedHopNumbers.value = [lastValid.hop_number]
+      }
+    } else if (stillValid.length !== selectedHopNumbers.value.length) {
+      selectedHopNumbers.value = stillValid
+    }
+  }
+)
+
+/**
+ * 切换跳的显示
+ * - 单击：替换为该跳
+ * - Ctrl/Cmd+点击：追加/移除
+ * 没有 IP 的跳无法 Ping 监控，不允许选中
+ */
+function toggleHopSelection(hopNumber: number, hasIp: boolean, event: MouseEvent) {
+  if (!hasIp) return
+  const isMulti = event.ctrlKey || event.metaKey
+  const idx = selectedHopNumbers.value.indexOf(hopNumber)
+  if (isMulti) {
+    if (idx >= 0) {
+      if (selectedHopNumbers.value.length > 1) {
+        selectedHopNumbers.value = selectedHopNumbers.value.filter(n => n !== hopNumber)
+      }
+    } else {
+      selectedHopNumbers.value = [...selectedHopNumbers.value, hopNumber]
+    }
+  } else {
+    selectedHopNumbers.value = [hopNumber]
+  }
+}
+
+const HOP_COLORS = [
+  '#4CAF50', '#2196F3', '#FF9800', '#E91E63', '#9C27B0',
+  '#00BCD4', '#FFC107', '#F44336', '#8BC34A', '#3F51B5'
+]
+function colorForHop(hopNumber: number): string {
+  return HOP_COLORS[hopNumber % HOP_COLORS.length]
+}
 
 // 监听事件
 useContinuousTraceListener(
@@ -65,78 +115,6 @@ async function handleStop() {
 function handleClear() {
   store.resetStore()
 }
-
-// 热力图配置
-const heatmapOption = computed(() => {
-  const { times, hops, data } = store.getHeatmapData()
-  if (data.length === 0) return { series: [] }
-
-  const validValues = data
-    .map(d => d[2])
-    .filter((v): v is number => v !== null && v > 0)
-    .sort((a, b) => a - b)
-
-  let dynamicMax = 50
-  if (validValues.length > 0) {
-    const p95Index = Math.floor(validValues.length * 0.95)
-    dynamicMax = Math.max(dynamicMax, Math.ceil((validValues[p95Index] || validValues[validValues.length - 1]) * 1.3))
-  }
-
-  return {
-    backgroundColor: 'transparent',
-    tooltip: {
-      position: 'top',
-      backgroundColor: 'rgba(30, 30, 30, 0.95)',
-      borderColor: '#555',
-      textStyle: { color: '#fff', fontSize: 12 },
-      formatter: (params: any) => {
-        const value = params.value[2]
-        const hopLabel = hops[params.value[1]] || ''
-        const time = times[params.value[0]] || ''
-        if (value === null || value === -1) return `${hopLabel}<br/>${time}<br/>超时`
-        return `${hopLabel}<br/>${time}<br/>延迟: ${value.toFixed(1)} ms`
-      }
-    },
-    grid: { left: 160, right: 60, top: 10, bottom: 60 },
-    xAxis: {
-      type: 'category',
-      data: times,
-      splitArea: { show: false },
-      axisLabel: { color: '#888', fontSize: 9, interval: Math.max(0, Math.floor(times.length / 8) - 1), rotate: 45 },
-      axisLine: { lineStyle: { color: '#444' } }
-    },
-    yAxis: {
-      type: 'category',
-      data: hops,
-      splitArea: { show: false },
-      axisLabel: { color: '#888', fontSize: 10, width: 140, overflow: 'truncate' },
-      axisLine: { lineStyle: { color: '#444' } }
-    },
-    dataZoom: [
-      {
-        type: 'slider', xAxisIndex: 0, bottom: 5, height: 16,
-        start: Math.max(0, 100 - (30 / Math.max(times.length, 1)) * 100), end: 100,
-        borderColor: '#555', fillerColor: 'rgba(76, 175, 80, 0.15)',
-        handleStyle: { color: '#4CAF50', borderColor: '#4CAF50' },
-        textStyle: { color: '#888', fontSize: 9 }, show: times.length > 30
-      },
-      { type: 'inside', xAxisIndex: 0, zoomOnMouseWheel: 'shift', moveOnMouseWheel: true }
-    ],
-    visualMap: {
-      min: 0, max: dynamicMax, calculable: true, orient: 'vertical',
-      right: 0, top: 'center', itemHeight: 120, textStyle: { color: '#888' },
-      inRange: { color: ['#2196F3', '#4CAF50', '#8BC34A', '#FFEB3B', '#FF9800', '#f44336'] },
-      formatter: (value: number) => `${Math.round(value)}ms`
-    },
-    series: [{
-      name: 'Latency', type: 'heatmap',
-      data: data.map(d => [d[0], d[1], d[2] === null ? -1 : d[2]]),
-      label: { show: false },
-      emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0, 0, 0, 0.5)' } },
-      itemStyle: { borderWidth: 1, borderColor: 'rgba(0,0,0,0.1)' }
-    }]
-  }
-})
 
 // 每跳统计：显示所有跳（包括无响应的），保持序号连续
 const hopStats = computed(() => {
@@ -268,17 +246,20 @@ function getLatencyClass(avg: number): string {
       <span>{{ t('continuousTrace.discovering') }}</span>
     </div>
 
-    <!-- 热力图 -->
-    <div v-if="store.hops.length > 0" class="heatmap-section">
-      <h3 class="section-title">{{ t('continuousTrace.heatmapTitle') }}</h3>
-      <div class="heatmap-container">
-        <v-chart :option="heatmapOption" :autoresize="true" style="width: 100%; height: 100%" />
+    <!-- 实时延迟折线图（传送带模式） -->
+    <div v-if="store.hops.length > 0" class="chart-section">
+      <h3 class="section-title">{{ t('traceLatency.title') }}</h3>
+      <div class="chart-container">
+        <TraceLatencyChart :selected-hops="selectedHopNumbers" />
       </div>
     </div>
 
     <!-- 每跳统计 -->
     <div v-if="hopStats.length > 0" class="stats-section">
-      <h3 class="section-title">{{ t('continuousTrace.statsTitle') }}</h3>
+      <div class="stats-header">
+        <h3 class="section-title">{{ t('continuousTrace.statsTitle') }}</h3>
+        <span class="stats-tip">{{ t('traceLatency.tableTip') }}</span>
+      </div>
       <table class="stats-table">
         <thead>
           <tr>
@@ -292,8 +273,24 @@ function getLatencyClass(avg: number): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="hop in hopStats" :key="hop.hop_number" :class="{ 'no-response': !hop.ip }">
-            <td>{{ hop.hop_number }}</td>
+          <tr
+            v-for="hop in hopStats"
+            :key="hop.hop_number"
+            :class="{
+              'no-response': !hop.ip,
+              'selectable': !!hop.ip,
+              'selected': !!hop.ip && selectedHopNumbers.includes(hop.hop_number)
+            }"
+            @click="toggleHopSelection(hop.hop_number, !!hop.ip, $event)"
+          >
+            <td>
+              <span
+                v-if="hop.ip && selectedHopNumbers.includes(hop.hop_number)"
+                class="hop-color-dot"
+                :style="{ background: colorForHop(hop.hop_number) }"
+              ></span>
+              {{ hop.hop_number }}
+            </td>
             <td class="mono">{{ hop.ip || '* * *' }}</td>
             <td :class="getLatencyClass(hop.stats.avg)">{{ hop.stats.avg > 0 ? `${hop.stats.avg.toFixed(1)} ms` : '--' }}</td>
             <td>{{ hop.stats.min > 0 ? `${hop.stats.min.toFixed(1)} ms` : '--' }}</td>
@@ -491,16 +488,16 @@ function getLatencyClass(avg: number): string {
   margin: 0 0 12px 0;
 }
 
-.heatmap-section {
+.chart-section {
   background: var(--card-bg);
   border-radius: 12px;
   border: 1px solid var(--border-color);
   padding: 16px;
 }
 
-.heatmap-container {
+.chart-container {
   width: 100%;
-  height: 300px;
+  height: 320px;
   min-width: 0;
 }
 
@@ -509,6 +506,22 @@ function getLatencyClass(avg: number): string {
   border-radius: 12px;
   border: 1px solid var(--border-color);
   padding: 16px;
+}
+
+.stats-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+
+  .section-title { margin: 0; }
+}
+
+.stats-tip {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .stats-table {
@@ -540,11 +553,35 @@ function getLatencyClass(avg: number): string {
 
   tr:hover td { background: var(--hover-bg); }
 
+  tr.selectable {
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  tr.selected td {
+    background: rgba(76, 175, 80, 0.12);
+    font-weight: 500;
+  }
+
+  tr.selected:hover td {
+    background: rgba(76, 175, 80, 0.18);
+  }
+
   tr.no-response {
     opacity: 0.5;
+    cursor: not-allowed;
 
     td { color: var(--text-muted); }
   }
+}
+
+.hop-color-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
 }
 
 .empty-state {

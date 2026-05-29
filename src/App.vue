@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
+import { listen } from '@tauri-apps/api/event'
 import AppSidebar from '@/components/common/AppSidebar.vue'
 import StatusBar from '@/components/common/StatusBar.vue'
 import ToastContainer from '@/components/common/ToastContainer.vue'
 import { stopAllPings } from '@/composables/usePing'
 import { usePingStore, useTracerouteStore, useBandwidthStore } from '@/stores'
+import { useToast } from '@/composables/useToast'
 
 const pingStore = usePingStore()
 const tracerouteStore = useTracerouteStore()
 const bandwidthStore = useBandwidthStore()
+const { info } = useToast()
+
+let unlistenFirstMinimize: (() => void) | null = null
 
 // 初始化：清理所有后台任务
 onMounted(async () => {
@@ -20,7 +25,16 @@ onMounted(async () => {
   tracerouteStore.resetStore()
   bandwidthStore.resetStore()
 
+  // 监听首次最小化提示
+  unlistenFirstMinimize = await listen<string>('first-minimize', (event) => {
+    info(event.payload, 5000)
+  })
+
   console.log('App initialized - all sessions cleared')
+})
+
+onUnmounted(() => {
+  unlistenFirstMinimize?.()
 })
 </script>
 

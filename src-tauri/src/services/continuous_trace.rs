@@ -4,6 +4,8 @@ use tokio::sync::mpsc::{self, Sender};
 use tokio::sync::RwLock;
 use crate::error::{AppError, AppResult};
 use crate::services::icmp::ping_once;
+use crate::services::dns::reverse_lookup;
+use crate::services::geoip;
 use tauri::Emitter;
 use serde::Serialize;
 
@@ -42,6 +44,9 @@ struct ContinuousTraceSession {
 /// 活跃的持续路径监控会话
 static CONTINUOUS_TRACE_SESSIONS: once_cell::sync::Lazy<Arc<RwLock<std::collections::HashMap<String, ContinuousTraceSession>>>> =
     once_cell::sync::Lazy::new(|| Arc::new(RwLock::new(std::collections::HashMap::new())));
+
+/// Default interval between path re-checks (5 minutes)
+const PATH_RECHECK_INTERVAL_MS: u64 = 300_000;
 
 /// 启动持续路径监控
 pub async fn start_continuous_trace(
@@ -134,6 +139,11 @@ async fn continuous_trace_task(
     let timeout = timeout_ms;
     let mut seq: u32 = 0;
 
+    // Path re-check state
+    let last_path: Vec<Option<String>> = hop_ips.iter()
+        .map(|(_, ip)| Some(ip.clone()))
+        .collect();
+    let mut last_recheck = std::time::Instant::now();
     loop {
         // 检查停止信号
         if stop_rx.try_recv().is_ok() {
@@ -185,6 +195,38 @@ async fn continuous_trace_task(
             }
         }
 
+        // Periodic path re-check (non-blocking)
+        if last_recheck.elapsed().as_millis() >= PATH_RECHECK_INTERVAL_MS as u128 {
+            last_recheck = std::time::Instant::now();
+            let ah = app_handle.clone();
+            let tgt = target.clone();
+            let mh = max_hops;
+            let tm = timeout_ms;
+            let pm = probe_method.clone();
+            let old_path = last_path.clone();
+
+            tokio::spawn(async move {
+                let new_hops = discover_path(&ah, &tgt, mh, tm, &pm).await;
+                if !new_hops.is_empty() {
+                    let new_path: Vec<Option<String>> = new_hops.iter()
+                        .map(|(_, ip, _)| Some(ip.clone()))
+                        .collect();
+
+                    // Diff old vs new path
+                    if old_path != new_path {
+                        let old_ips: Vec<Option<String>> = old_path.clone();
+                        let new_ips = new_path.clone();
+                        let _ = ah.emit("path-changed", serde_json::json!({
+                            "target": tgt,
+                            "old": old_ips,
+                            "new": new_ips,
+                            "timestamp": chrono::Utc::now().timestamp_millis(),
+                        }));
+                    }
+                }
+            });
+        }
+
         // 等待下一个间隔
         tokio::select! {
             _ = tokio::time::sleep(interval) => {},
@@ -198,7 +240,7 @@ async fn continuous_trace_task(
     cleanup_session(&target).await;
 }
 
-/// 发现路径：运行 traceroute 并提取每一跳的 IP
+/// 发现路径：运行 traceroute 并提取每一跳的 IP，同时做反向 DNS + GeoIP
 async fn discover_path(
     app_handle: &tauri::AppHandle,
     target: &str,
@@ -210,7 +252,6 @@ async fn discover_path(
 
     // 根据探测方式选择命令参数
     let (command, args) = if cfg!(windows) {
-        // Windows: tracert 只支持 ICMP，UDP/TCP 需要 tracetcp
         match probe_method {
             "tcp" => {
                 ("tracetcp", vec![
@@ -221,7 +262,6 @@ async fn discover_path(
                 ])
             }
             _ => {
-                // ICMP 和 UDP 都用 tracert（Windows 的 tracert 默认 ICMP）
                 ("tracert", vec![
                     "-d".to_string(),
                     "-h".to_string(), max_hops.to_string(),
@@ -234,7 +274,7 @@ async fn discover_path(
         let method_flag = match probe_method {
             "udp" => "-U".to_string(),
             "tcp" => "-T".to_string(),
-            _ => "-I".to_string(), // ICMP
+            _ => "-I".to_string(),
         };
         ("traceroute", vec![
             method_flag,
@@ -268,6 +308,54 @@ async fn discover_path(
         }
         Err(e) => {
             log::error!("Failed to run traceroute for path discovery: {}", e);
+        }
+    }
+
+    // Do reverse DNS + GeoIP for each hop in parallel
+    let mut geo_handles = Vec::new();
+    for (hop_num, ip, _) in &hops {
+        let ip_str = ip.clone();
+        let hop_num = *hop_num;
+        let target_owned = target.to_string();
+        let ah = app_handle.clone();
+
+        geo_handles.push(tokio::spawn(async move {
+            let ip_addr: std::net::IpAddr = ip_str.parse().ok()?;
+            let (hostname_res, geo_res) = tokio::join!(
+                reverse_lookup(&ip_addr),
+                geoip::lookup_one(&ip_addr)
+            );
+
+            let hostname = hostname_res.ok().flatten();
+
+            // Emit geo info to frontend
+            if let Some(geo) = geo_res {
+                let _ = ah.emit("continuous-trace-hop-geo", serde_json::json!({
+                    "target": target_owned,
+                    "hop_number": hop_num,
+                    "ip": ip_str,
+                    "geo": geo,
+                    "hostname": hostname,
+                }));
+            } else if hostname.is_some() {
+                // Still emit just the hostname even without geo
+                let _ = ah.emit("continuous-trace-hop-geo", serde_json::json!({
+                    "target": target_owned,
+                    "hop_number": hop_num,
+                    "ip": ip_str,
+                    "geo": null,
+                    "hostname": hostname,
+                }));
+            }
+
+            Some(hostname)
+        }));
+    }
+
+    // Wait for all geo lookups and update hostnames
+    for (i, handle) in geo_handles.into_iter().enumerate() {
+        if let Ok(Some(hostname)) = handle.await {
+            hops[i].2 = hostname;
         }
     }
 

@@ -19,6 +19,7 @@ const navItems = computed(() => [
   { path: '/dns', name: t('nav.dns'), icon: '🔎' },
   { path: '/network-info', name: t('nav.networkInfo'), icon: '🖥️' },
   { path: '/history', name: t('nav.history'), icon: '📊' },
+  { path: '/alerts', name: t('nav.alerts'), icon: '🔔' },
   { path: '/settings', name: t('nav.settings'), icon: '⚙️' },
 ])
 

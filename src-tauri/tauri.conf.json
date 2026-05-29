@@ -21,6 +21,12 @@
         "center": true
       }
     ],
+    "trayIcon": {
+      "id": "main",
+      "iconPath": "icons/icon.ico",
+      "iconAsTemplate": false,
+      "tooltip": "PingPlotter Next"
+    },
     "security": {
       "csp": null
     }

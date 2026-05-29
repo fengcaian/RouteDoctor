@@ -24,6 +24,10 @@ export interface MonitoredHop {
   lossRate: number            // 0-100
   totalSent: number
   totalLost: number
+  /** Timestamp of the last detected path change at this hop (path_change feature) */
+  changedAt?: number
+  /** History of IPs seen at this hop number (most recent last) */
+  ipHistory?: string[]
 }
 
 /**
@@ -129,11 +133,37 @@ export const usePathMonitorStore = defineStore('pathMonitor', () => {
     session.value = null
   }
 
+  /**
+   * 记录路径变化 (path_change event 触发时调用)
+   */
+  function recordPathChange(target: string, oldIps: (string | null)[], newIps: (string | null)[]) {
+    if (!session.value || session.value.target !== target) return
+
+    const now = Date.now()
+    const maxLen = Math.max(oldIps.length, newIps.length)
+    for (let i = 0; i < maxLen; i++) {
+      const oldIp = oldIps[i] || null
+      const newIp = newIps[i] || null
+      if (oldIp === newIp) continue
+
+      const hopNumber = i + 1
+      let hop = session.value.hops.find(h => h.hopNumber === hopNumber)
+      if (!hop) continue
+
+      if (!hop.ipHistory) hop.ipHistory = []
+      if (oldIp && !hop.ipHistory.includes(oldIp)) hop.ipHistory.push(oldIp)
+      if (newIp && !hop.ipHistory.includes(newIp)) hop.ipHistory.push(newIp)
+      hop.changedAt = now
+      hop.ip = newIp
+    }
+  }
+
   return {
     session,
     initSession,
     addSampleRound,
     stopSession,
-    clearSession
+    clearSession,
+    recordPathChange
   }
 })

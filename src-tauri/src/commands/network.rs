@@ -1,5 +1,7 @@
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
+use std::collections::HashMap;
+use std::net::IpAddr;
 
 /// DNS 查询结果
 #[derive(Debug, Serialize)]
@@ -459,4 +461,22 @@ pub async fn get_public_ip_info() -> AppResult<PublicIpInfo> {
         org,
         timezone: info.timezone,
     })
+}
+
+/// GeoIP 查询命令 - 单个 IP
+#[tauri::command]
+pub async fn geoip_lookup(ip: String) -> AppResult<Option<crate::services::geoip::GeoInfo>> {
+    let parsed: IpAddr = ip
+        .parse()
+        .map_err(|e| AppError::InvalidTarget(format!("invalid IP {}: {}", ip, e)))?;
+    Ok(crate::services::geoip::lookup_one(&parsed).await)
+}
+
+/// GeoIP 批量查询命令
+#[tauri::command]
+pub async fn geoip_lookup_batch(
+    ips: Vec<String>,
+) -> AppResult<HashMap<String, crate::services::geoip::GeoInfo>> {
+    let parsed: Vec<IpAddr> = ips.iter().filter_map(|s| s.parse().ok()).collect();
+    Ok(crate::services::geoip::lookup_batch(&parsed).await)
 }

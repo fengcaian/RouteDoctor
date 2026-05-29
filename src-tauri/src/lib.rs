@@ -8,7 +8,11 @@ pub mod storage;
 pub mod utils;
 pub mod error;
 
-use tauri::Listener;
+use std::sync::atomic::Ordering;
+use tauri::{Emitter, Manager, WindowEvent};
+use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri_plugin_autostart::MacosLauncher;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -20,31 +24,120 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec!["--minimized"]),
+        ))
         .setup(|app| {
             // Initialize database
             let app_handle = app.handle();
             storage::database::init_database(&app_handle)?;
 
-            // Register window close handler to save pending data
-            let app_handle = app.handle().clone();
-            app.listen("tauri://window-close-requested", move |_| {
-                let app_handle = app_handle.clone();
-                tokio::spawn(async move {
-                    log::info!("App closing, saving pending data...");
-
-                    // Save pending ping sessions
-                    if let Err(e) = services::icmp::save_all_sessions(&app_handle).await {
-                        log::error!("Failed to save ping sessions: {}", e);
-                    }
-
-                    // Save pending bandwidth session
-                    if let Err(e) = services::bandwidth::save_bandwidth_session(&app_handle).await {
-                        log::error!("Failed to save bandwidth session: {}", e);
-                    }
-
-                    log::info!("All pending data saved, exiting...");
-                });
+            // Initialize native ICMP engine (surge-ping). Must be done inside the
+            // Tokio runtime since surge_ping::Client::new() registers an IO source.
+            tauri::async_runtime::block_on(async {
+                services::icmp_engine::init();
             });
+
+            // Build tray menu
+            let show_item = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
+            let pause_item = MenuItemBuilder::with_id("pause", "暂停所有 Ping").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
+            let menu = MenuBuilder::new(app)
+                .item(&show_item)
+                .item(&pause_item)
+                .separator()
+                .item(&quit_item)
+                .build()?;
+
+            // Build tray icon
+            let app_handle_for_tray = app.handle().clone();
+            let _tray = TrayIconBuilder::with_id("main")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(move |app, event| {
+                    match event.id().as_ref() {
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.unminimize();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "pause" => {
+                            let ah = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = services::icmp::stop_all_pings(&ah).await {
+                                    log::error!("Failed to stop all pings from tray: {}", e);
+                                }
+                            });
+                        }
+                        "quit" => {
+                            let ah = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = services::icmp::save_all_sessions(&ah).await;
+                                let _ = services::bandwidth::save_bandwidth_session(&ah).await;
+                                ah.exit(0);
+                            });
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(move |_tray, event| {
+                    // Double-click left mouse button: restore window
+                    if let TrayIconEvent::DoubleClick {
+                        button: MouseButton::Left,
+                        ..
+                    } = event
+                    {
+                        if let Some(window) = app_handle_for_tray.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.unminimize();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            // Handle --minimized arg: hide window on startup
+            let args: Vec<String> = std::env::args().collect();
+            if args.iter().any(|a| a == "--minimized") {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
+
+            // Wire up close-to-tray behaviour
+            if let Some(window) = app.get_webview_window("main") {
+                let window_clone = window.clone();
+                let app_handle_for_close = app.handle().clone();
+                let first_close = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        if commands::settings::MINIMIZE_TO_TRAY.load(Ordering::Relaxed) {
+                            api.prevent_close();
+                            let _ = window_clone.hide();
+
+                            // Show toast on first minimize
+                            if first_close.swap(false, Ordering::Relaxed) {
+                                let _ = app_handle_for_close.emit(
+                                    "first-minimize",
+                                    "应用已最小化到托盘，右键托盘图标可退出",
+                                );
+                            }
+                        } else {
+                            // Full quit: save sessions before letting Tauri close
+                            let ah = app_handle_for_close.clone();
+                            tauri::async_runtime::block_on(async move {
+                                let _ = services::icmp::save_all_sessions(&ah).await;
+                                let _ = services::bandwidth::save_bandwidth_session(&ah).await;
+                            });
+                        }
+                    }
+                });
+            }
 
             Ok(())
         })
@@ -65,6 +158,13 @@ pub fn run() {
             commands::network::dns_lookup,
             commands::network::get_network_info,
             commands::network::get_public_ip_info,
+            commands::network::geoip_lookup,
+            commands::network::geoip_lookup_batch,
+            commands::settings::set_minimize_to_tray,
+            commands::settings::is_autostart_enabled,
+            commands::settings::set_autostart,
+            commands::settings::quit_app,
+            commands::alerts::trigger_webhook,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

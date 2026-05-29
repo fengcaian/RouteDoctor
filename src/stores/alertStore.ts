@@ -1,22 +1,27 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { useToast } from '@/composables/useToast'
+
+export type AlertConditionType = 'latency' | 'loss' | 'timeout_streak' | 'path_change'
 
 export interface AlertRule {
   id: string
-  target: string          // 监控目标（'*' 表示所有目标）
+  name: string             // 规则名称
+  target: string           // 监控目标（'*' 表示所有目标）
   enabled: boolean
   // 触发条件
   condition: {
-    type: 'latency' | 'loss' | 'timeout_streak'
-    threshold: number     // latency: ms, loss: %, timeout_streak: 连续超时次数
-    duration?: number     // 持续多少次采样后触发（防抖）
+    type: AlertConditionType
+    threshold: number      // latency: ms, loss: %, timeout_streak: 连续超时次数; path_change: ignored
+    duration?: number      // 持续多少次采样后触发（防抖）
   }
   // 通知方式
   notify: {
     toast: boolean
     sound: boolean
-    system: boolean       // 系统通知（Tauri notification）
+    system: boolean        // 系统通知（Tauri notification）
+    webhook?: string       // POST URL；空 = 关闭
   }
   // 状态
   lastTriggered: number | null
@@ -29,13 +34,13 @@ export interface AlertEvent {
   target: string
   message: string
   timestamp: number
-  value: number           // 触发时的实际值
+  value: number            // 触发时的实际值（path_change: 0）
 }
 
 export const useAlertStore = defineStore('alerts', () => {
   // 从 localStorage 加载规则
   const savedRules = localStorage.getItem('alert-rules')
-  const rules = ref<AlertRule[]>(savedRules ? JSON.parse(savedRules) : getDefaultRules())
+  const rules = ref<AlertRule[]>(savedRules ? normaliseRules(JSON.parse(savedRules)) : getDefaultRules())
 
   // 告警事件历史（最近 100 条）
   const events = ref<AlertEvent[]>([])
@@ -93,6 +98,10 @@ export const useAlertStore = defineStore('alerts', () => {
             actualValue = streak
           }
           break
+
+        case 'path_change':
+          // 由 firePathChange 直接调用
+          break
       }
 
       if (triggered) {
@@ -102,7 +111,6 @@ export const useAlertStore = defineStore('alerts', () => {
         conditionCounts.value.set(conditionKey, count)
 
         if (count >= duration) {
-          // 触发告警（每 30 秒最多触发一次同一规则）
           const now = Date.now()
           if (!rule.lastTriggered || now - rule.lastTriggered > 30000) {
             fireAlert(rule, target, actualValue, toast)
@@ -137,12 +145,31 @@ export const useAlertStore = defineStore('alerts', () => {
   }
 
   /**
+   * 路径变化告警 (continuous trace 触发)
+   */
+  function firePathChange(target: string, oldIps: (string | null)[], newIps: (string | null)[]) {
+    const toast = useToast()
+    for (const rule of rules.value) {
+      if (!rule.enabled) continue
+      if (rule.condition.type !== 'path_change') continue
+      if (rule.target !== '*' && rule.target !== target) continue
+
+      const now = Date.now()
+      if (rule.lastTriggered && now - rule.lastTriggered < 30000) continue
+
+      // Custom payload for path change events
+      const message = `🔀 ${target} 路径已变化（旧 ${oldIps.length} 跳 → 新 ${newIps.length} 跳）`
+      fireAlertWithMessage(rule, target, 0, message, toast, {
+        oldPath: oldIps,
+        newPath: newIps,
+      })
+    }
+  }
+
+  /**
    * 触发告警
    */
   function fireAlert(rule: AlertRule, target: string, value: number, toast: ReturnType<typeof useToast>) {
-    rule.lastTriggered = Date.now()
-    rule.triggerCount++
-
     let message = ''
     switch (rule.condition.type) {
       case 'latency':
@@ -154,7 +181,23 @@ export const useAlertStore = defineStore('alerts', () => {
       case 'timeout_streak':
         message = `⚠️ ${target} 连续超时 ${value} 次 (阈值: ${rule.condition.threshold} 次)`
         break
+      case 'path_change':
+        message = `🔀 ${target} 路径已变化`
+        break
     }
+    fireAlertWithMessage(rule, target, value, message, toast)
+  }
+
+  function fireAlertWithMessage(
+    rule: AlertRule,
+    target: string,
+    value: number,
+    message: string,
+    toast: ReturnType<typeof useToast>,
+    extra?: Record<string, unknown>
+  ) {
+    rule.lastTriggered = Date.now()
+    rule.triggerCount++
 
     // 记录事件
     const event: AlertEvent = {
@@ -170,21 +213,39 @@ export const useAlertStore = defineStore('alerts', () => {
       events.value.pop()
     }
 
-    // 通知
+    // Toast
     if (rule.notify.toast) {
       toast.warning(message, 5000)
     }
 
+    // 系统通知 (Tauri plugin -> browser fallback)
     if (rule.notify.system) {
-      // Tauri 系统通知
-      try {
-        new Notification('PingPlotter Next 告警', { body: message })
-      } catch (e) {
-        // 系统通知不可用时降级为 toast
-        if (!rule.notify.toast) {
-          toast.warning(message, 5000)
+      invoke('plugin:notification|notify', {
+        options: { title: 'PingPlotter Next 告警', body: message }
+      }).catch(() => {
+        try {
+          new Notification('PingPlotter Next 告警', { body: message })
+        } catch {
+          if (!rule.notify.toast) toast.warning(message, 5000)
         }
+      })
+    }
+
+    // Webhook
+    if (rule.notify.webhook && rule.notify.webhook.trim().length > 0) {
+      const payload = {
+        rule: rule.name,
+        ruleId: rule.id,
+        target,
+        condition: rule.condition,
+        value,
+        message,
+        timestamp: event.timestamp,
+        ...(extra || {})
       }
+      invoke('trigger_webhook', { url: rule.notify.webhook, payload }).catch((e) => {
+        console.error('webhook failed', e)
+      })
     }
   }
 
@@ -232,12 +293,27 @@ export const useAlertStore = defineStore('alerts', () => {
     events,
     checkPingResult,
     checkLossRate,
+    firePathChange,
     addRule,
     removeRule,
     toggleRule,
     clearEvents
   }
 })
+
+/** Backfill name/webhook on rules loaded from older versions of localStorage. */
+function normaliseRules(loaded: any[]): AlertRule[] {
+  return loaded.map((r) => ({
+    name: r.name || '未命名规则',
+    ...r,
+    notify: {
+      toast: r.notify?.toast ?? true,
+      sound: r.notify?.sound ?? false,
+      system: r.notify?.system ?? false,
+      webhook: r.notify?.webhook ?? '',
+    },
+  })) as AlertRule[]
+}
 
 /**
  * 默认告警规则
@@ -246,6 +322,7 @@ function getDefaultRules(): AlertRule[] {
   return [
     {
       id: crypto.randomUUID(),
+      name: '高延迟告警',
       target: '*',
       enabled: true,
       condition: {
@@ -253,12 +330,13 @@ function getDefaultRules(): AlertRule[] {
         threshold: 200,
         duration: 3
       },
-      notify: { toast: true, sound: false, system: false },
+      notify: { toast: true, sound: false, system: false, webhook: '' },
       lastTriggered: null,
       triggerCount: 0
     },
     {
       id: crypto.randomUUID(),
+      name: '连续超时告警',
       target: '*',
       enabled: true,
       condition: {
@@ -266,7 +344,7 @@ function getDefaultRules(): AlertRule[] {
         threshold: 5,
         duration: 1
       },
-      notify: { toast: true, sound: false, system: true },
+      notify: { toast: true, sound: false, system: true, webhook: '' },
       lastTriggered: null,
       triggerCount: 0
     }

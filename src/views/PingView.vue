@@ -218,6 +218,11 @@ usePingListener(
     pingStore.addResult(result)
     // 检查告警规则
     alertStore.checkPingResult(result.target, result.latency_ms, result.is_timeout)
+    // 同时检查丢包率告警
+    const stats = pingStore.getStatistics(result.target)
+    if (stats) {
+      alertStore.checkLossRate(result.target, stats.loss_rate)
+    }
   }
 )
 </script>

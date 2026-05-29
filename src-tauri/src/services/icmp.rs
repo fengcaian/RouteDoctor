@@ -181,11 +181,42 @@ pub async fn save_all_sessions(app_handle: &tauri::AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-/// Single ping operation using system ping command
+/// Single ping operation.
+///
+/// Tries native (raw-socket) ICMP via surge-ping first; falls back to the
+/// system `ping` command if native ICMP is unavailable or returns an error.
 pub async fn ping_once(target: &str, timeout_ms: u32, packet_size: u32) -> AppResult<PingResult> {
     let ip = resolve_target(target).await?;
+    let now = chrono::Utc::now().timestamp_millis();
 
-    // Use Windows ping command with timeout and packet size
+    if crate::services::icmp_engine::is_native_available(ip) {
+        match crate::services::icmp_engine::ping_native(ip, 1, timeout_ms, packet_size).await {
+            Ok(latency_ms) => {
+                return Ok(PingResult {
+                    seq: 0,
+                    target: target.to_string(),
+                    ip: ip.to_string(),
+                    latency_ms,
+                    is_timeout: latency_ms.is_none(),
+                    timestamp: now,
+                });
+            }
+            Err(e) => {
+                log::warn!("Native ping failed, falling back to system ping: {}", e);
+            }
+        }
+    }
+
+    ping_once_system(target, ip, timeout_ms, packet_size).await
+}
+
+/// Legacy ping using the system `ping` command. Kept as fallback.
+async fn ping_once_system(
+    target: &str,
+    ip: IpAddr,
+    timeout_ms: u32,
+    packet_size: u32,
+) -> AppResult<PingResult> {
     let output = tokio::process::Command::new("ping")
         .args([
             "-n", "1",
@@ -257,7 +288,8 @@ fn parse_ping_time(output: &str) -> Option<f64> {
     None
 }
 
-/// Ping loop task using system ping command
+/// Ping loop task. Prefers native (raw-socket) ICMP; falls back to spawning
+/// the system `ping` command if surge-ping is unavailable or errors out.
 async fn ping_loop(
     app_handle: tauri::AppHandle,
     config: PingConfig,
@@ -266,13 +298,20 @@ async fn ping_loop(
     session_id: i64,
 ) {
     let interval = Duration::from_millis(config.interval_ms as u64);
-    let timeout = config.timeout_ms as u64;
+    let timeout = config.timeout_ms;
+    let packet_size = config.packet_size;
+
+    let max_count = config.count.unwrap_or(u32::MAX);
+    let native_available = crate::services::icmp_engine::is_native_available(ip);
+
+    // Use a tokio interval for accurate pacing (does not drift)
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let mut seq: u32 = 0;
-    let max_count = config.count.unwrap_or(u32::MAX);
 
     loop {
-        // Check for stop signal
+        // Cooperative stop check
         if stop_rx.try_recv() != Err(mpsc::error::TryRecvError::Empty) {
             break;
         }
@@ -281,42 +320,29 @@ async fn ping_loop(
             break;
         }
 
-        // Use Windows ping command with configured packet size
-        let output = tokio::process::Command::new("ping")
-            .args([
-                "-n", "1",
-                "-l", &config.packet_size.to_string(), // Set packet size
-                "-w", &timeout.to_string(),
-                &ip.to_string()
-            ])
-            .output()
-            .await;
+        seq = seq.saturating_add(1);
+        let timestamp = chrono::Utc::now().timestamp_millis();
 
-        let ping_result = match output {
-            Ok(out) => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                let latency_ms = parse_ping_time(&stdout);
-
-                PingResult {
-                    seq,
-                    target: config.target.clone(),
-                    ip: ip.to_string(),
-                    latency_ms,
-                    is_timeout: latency_ms.is_none(),
-                    timestamp: chrono::Utc::now().timestamp_millis(),
+        let latency_ms = if native_available {
+            let icmp_seq = (seq % 65535) as u16;
+            match crate::services::icmp_engine::ping_native(ip, icmp_seq, timeout, packet_size).await {
+                Ok(ms) => ms,
+                Err(e) => {
+                    log::warn!("Native ping failed seq={}, fallback to system ping: {}", seq, e);
+                    fallback_ping_system(ip, timeout, packet_size).await
                 }
             }
-            Err(e) => {
-                log::error!("Ping command error: {}", e);
-                PingResult {
-                    seq,
-                    target: config.target.clone(),
-                    ip: ip.to_string(),
-                    latency_ms: None,
-                    is_timeout: true,
-                    timestamp: chrono::Utc::now().timestamp_millis(),
-                }
-            }
+        } else {
+            fallback_ping_system(ip, timeout, packet_size).await
+        };
+
+        let ping_result = PingResult {
+            seq,
+            target: config.target.clone(),
+            ip: ip.to_string(),
+            latency_ms,
+            is_timeout: latency_ms.is_none(),
+            timestamp,
         };
 
         // Store result in global session state (with size limit)
@@ -324,7 +350,6 @@ async fn ping_loop(
             let mut sessions = PING_SESSIONS.write().await;
             if let Some(info) = sessions.get_mut(&config.target) {
                 info.results.push(ping_result.clone());
-                // Keep only last MAX_SESSION_RESULTS to prevent memory leak
                 if info.results.len() > MAX_SESSION_RESULTS {
                     info.results.remove(0);
                 }
@@ -336,10 +361,11 @@ async fn ping_loop(
             log::error!("Failed to emit ping result: {}", e);
         }
 
-        seq += 1;
-
-        // Wait for interval
-        tokio::time::sleep(interval).await;
+        // Wait for the next tick, but break out early if stop is signalled
+        tokio::select! {
+            _ = ticker.tick() => {},
+            _ = stop_rx.recv() => break,
+        }
     }
 
     // Save session result to database
@@ -370,6 +396,30 @@ async fn ping_loop(
             &session_data.to_string(),
         ).await {
             log::error!("Failed to save ping session: {}", e);
+        }
+    }
+}
+
+/// Fallback to system `ping` for a single packet. Returns latency in ms or None on timeout/error.
+async fn fallback_ping_system(ip: IpAddr, timeout_ms: u32, packet_size: u32) -> Option<f64> {
+    let output = tokio::process::Command::new("ping")
+        .args([
+            "-n", "1",
+            "-l", &packet_size.to_string(),
+            "-w", &timeout_ms.to_string(),
+            &ip.to_string(),
+        ])
+        .output()
+        .await;
+
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            parse_ping_time(&stdout)
+        }
+        Err(e) => {
+            log::error!("System ping fallback failed: {}", e);
+            None
         }
     }
 }

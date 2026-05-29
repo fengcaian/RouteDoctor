@@ -1,6 +1,7 @@
 import { onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import type { GeoInfo, PathChangeEvent } from '@/types'
 
 // 持续路径监控的单跳结果
 export interface ContinuousTraceHopResult {
@@ -21,6 +22,15 @@ export interface PathDiscovered {
     ip: string | null
     hostname: string | null
   }[]
+}
+
+// 单跳 GeoIP 事件
+export interface ContinuousTraceHopGeo {
+  target: string
+  hop_number: number
+  ip: string
+  geo: GeoInfo | null
+  hostname: string | null
 }
 
 export function useContinuousTrace() {
@@ -55,12 +65,16 @@ export function useContinuousTraceListener(
   onPathDiscovered: (data: PathDiscovered) => void,
   onHopResult: (data: ContinuousTraceHopResult) => void,
   onError?: (msg: string) => void,
-  onStopped?: (target: string) => void
+  onStopped?: (target: string) => void,
+  onHopGeo?: (data: ContinuousTraceHopGeo) => void,
+  onPathChanged?: (data: PathChangeEvent) => void
 ) {
   let unlistenPath: (() => void) | null = null
   let unlistenHop: (() => void) | null = null
   let unlistenError: (() => void) | null = null
   let unlistenStopped: (() => void) | null = null
+  let unlistenGeo: (() => void) | null = null
+  let unlistenChanged: (() => void) | null = null
 
   onMounted(async () => {
     unlistenPath = await listen<PathDiscovered>('continuous-trace-path-discovered', (event) => {
@@ -82,6 +96,18 @@ export function useContinuousTraceListener(
         onStopped(event.payload)
       })
     }
+
+    if (onHopGeo) {
+      unlistenGeo = await listen<ContinuousTraceHopGeo>('continuous-trace-hop-geo', (event) => {
+        onHopGeo(event.payload)
+      })
+    }
+
+    if (onPathChanged) {
+      unlistenChanged = await listen<PathChangeEvent>('path-changed', (event) => {
+        onPathChanged(event.payload)
+      })
+    }
   })
 
   onUnmounted(() => {
@@ -89,5 +115,7 @@ export function useContinuousTraceListener(
     unlistenHop?.()
     unlistenError?.()
     unlistenStopped?.()
+    unlistenGeo?.()
+    unlistenChanged?.()
   })
 }

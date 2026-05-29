@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { TracerouteResult, HopResult, ProbeMethod } from '@/types'
+import type { TracerouteResult, HopResult, ProbeMethod, GeoInfo } from '@/types'
 
 export const useTracerouteStore = defineStore('traceroute', () => {
   // State - 使用 ref 并在更新时创建新 Map 以触发响应性
@@ -103,6 +103,22 @@ export const useTracerouteStore = defineStore('traceroute', () => {
     currentHop.value = newCurrentHop
   }
 
+  // Attach GeoIP info to an existing hop (delivered asynchronously by the backend).
+  function updateHopGeo(target: string, hopNumber: number, geo: GeoInfo) {
+    const result = results.value.get(target)
+    if (!result) return
+
+    const hopIdx = result.hops.findIndex(h => h.hop_number === hopNumber)
+    if (hopIdx < 0) return
+
+    const newHops = [...result.hops]
+    newHops[hopIdx] = { ...newHops[hopIdx], geo }
+
+    const newResults = new Map(results.value)
+    newResults.set(target, { ...result, hops: newHops })
+    results.value = newResults
+  }
+
   function resetStore() {
     results.value.clear()
     runningTargets.value.clear()
@@ -121,6 +137,7 @@ export const useTracerouteStore = defineStore('traceroute', () => {
     getCurrentHop,
     getResult,
     clearResult,
+    updateHopGeo,
     resetStore
   }
 })
