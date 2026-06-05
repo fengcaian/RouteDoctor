@@ -17,13 +17,11 @@ export default {
   // 侧边栏导航
   nav: {
     ping: 'Ping',
-    traceroute: 'Traceroute',
+    traceroute: '路径监控',
     bandwidth: '带宽测试',
     history: '历史记录',
     dns: 'DNS 查询',
     networkInfo: '网络信息',
-    pathMonitor: '路径监控',
-    continuousTrace: '路径监控',
     alerts: '告警',
     settings: '设置',
     backHome: '返回首页',
@@ -112,8 +110,8 @@ export default {
 
   // Traceroute 页面
   traceroute: {
-    title: 'Traceroute',
-    subtitle: '网络路径发现和跳数分析',
+    title: '路径监控',
+    subtitle: '发现到目标的网络路径，并对每一跳持续 Ping 监控延迟与丢包',
     startTrace: '开始追踪',
     tracing: '追踪中... 点击停止',
     clearData: '清除数据',
@@ -288,38 +286,7 @@ export default {
     emptyHint: '输入目标地址开始持续路径监控',
   },
 
-  // 路径监控页面
-  pathMonitor: {
-    title: '路径监控',
-    subtitle: '对路径上每一跳持续 Ping，实时发现网络瓶颈',
-    target: '目标',
-    hops: '跳数',
-    samples: '采样次数',
-    running: '运行中',
-    stopped: '已停止',
-    interval: '采样间隔 (ms)',
-    start: '开始监控',
-    stop: '停止监控',
-    discovering: '正在发现路径...',
-    current: '当前',
-    loss: '丢包率',
-    sent: '已发送',
-    heatmapEmpty: '等待采样数据...',
-  },
-
-  // 路径监控 - 实时延迟图
-  pathLatency: {
-    modeLive: '实时监控',
-    modeHistory: '历史查看',
-    backToLive: '返回实时',
-    samples: '采样',
-    timeout: '超时',
-    empty: '暂无数据',
-    emptyHint: '开始监控后，点击下方表格行可切换查看节点延迟',
-    tableTip: '点击表格行切换显示节点 · Ctrl+点击 可追加多个节点对比',
-  },
-
-  // Traceroute - 实时延迟折线图
+  // 路径监控 - Traceroute 实时延迟折线图
   traceLatency: {
     title: '节点延迟实时监控',
     modeLive: '实时监控',
@@ -330,6 +297,35 @@ export default {
     empty: '暂无数据',
     emptyHint: '在下方表格中点击 IP 行以查看该节点的延迟曲线',
     tableTip: '点击行切换节点 · Ctrl+点击 追加多个节点对比',
+  },
+
+  // 路径监控 - 历史会话
+  traceHistory: {
+    title: '会话历史',
+    button: '历史会话',
+    refresh: '刷新',
+    empty: '没有历史会话',
+    emptyHint: '运行一次路径监控会话后，记录会自动保存在这里',
+    target: '目标',
+    startedAt: '开始时间',
+    duration: '时长',
+    samples: '样本数',
+    status: '状态',
+    statusRunning: '运行中',
+    statusStopped: '已结束',
+    statusCrashed: '异常中断',
+    statusViewing: '查看中',
+    interval: '间隔',
+    method: '协议',
+    load: '加载',
+    loading: '加载中...',
+    delete: '删除',
+    deleteConfirm: '确定删除这个会话及其所有样本？',
+    confirmReplace: '当前会话仍在运行，加载历史会停止当前会话。是否继续？',
+    exitView: '退出查看',
+    viewBanner: '正在查看历史会话（只读）',
+    loadLimit: '最近 {n} 条样本',
+    loadFailed: '加载失败',
   },
 
   // DNS 查询页面

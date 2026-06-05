@@ -1,12 +1,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, Sender};
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
+use tokio::time::MissedTickBehavior;
 use crate::error::{AppError, AppResult};
 use crate::services::icmp::ping_once;
 use crate::services::dns::reverse_lookup;
 use crate::services::geoip;
+use crate::storage::trace_persist::{self, PersistEvent, PersistSample};
 use tauri::Emitter;
+use tauri::Manager;
 use serde::Serialize;
 
 /// 持续路径监控的单跳 Ping 结果
@@ -56,6 +59,7 @@ pub async fn start_continuous_trace(
     timeout_ms: u32,
     ping_interval_ms: u32,
     probe_method: String,
+    persist: bool,
 ) -> AppResult<()> {
     // 检查是否已在运行
     let sessions = CONTINUOUS_TRACE_SESSIONS.read().await;
@@ -80,6 +84,7 @@ pub async fn start_continuous_trace(
         timeout_ms,
         ping_interval_ms,
         probe_method,
+        persist,
         stop_rx,
     ));
 
@@ -105,9 +110,11 @@ async fn continuous_trace_task(
     timeout_ms: u32,
     ping_interval_ms: u32,
     probe_method: String,
+    persist: bool,
     mut stop_rx: mpsc::Receiver<()>,
 ) {
-    log::info!("Starting continuous trace to {} (interval: {}ms, method: {})", target, ping_interval_ms, probe_method);
+    log::info!("Starting continuous trace to {} (interval: {}ms, method: {}, persist: {})",
+        target, ping_interval_ms, probe_method, persist);
 
     // 第一步：运行 Traceroute 发现路径
     let hops = discover_path(&app_handle, &target, max_hops, timeout_ms, &probe_method).await;
@@ -118,6 +125,41 @@ async fn continuous_trace_task(
         cleanup_session(&target).await;
         return;
     }
+
+    // 持久化层：可选地创建 trace_session 行 + 注册每跳元信息
+    let persist_handle: Option<(i64, mpsc::Sender<PersistEvent>)> = if persist {
+        match trace_persist::start_session(
+            &app_handle, &target, ping_interval_ms, timeout_ms, &probe_method,
+        ).await {
+            Ok(session_id) => {
+                // 写入每跳元信息（IP / hostname；geo 由后续 emit 时补充）
+                for (hop_num, ip, hostname) in &hops {
+                    let _ = trace_persist::upsert_hop_info(
+                        &app_handle, session_id, *hop_num,
+                        Some(ip.as_str()),
+                        hostname.as_deref(),
+                        None,
+                    ).await;
+                }
+
+                // 通知前端"会话已落盘"，附带 session_id
+                let _ = app_handle.emit("continuous-trace-session-started", serde_json::json!({
+                    "target": target,
+                    "session_id": session_id,
+                }));
+
+                // 取出全局 writer Sender（被挂在 app state 上）
+                let state = app_handle.state::<crate::TracePersistState>();
+                Some((session_id, state.0.clone()))
+            }
+            Err(e) => {
+                log::error!("Failed to create trace_session for {}: {}", target, e);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // 通知前端路径已发现
     let discovered = PathDiscovered {
@@ -130,60 +172,69 @@ async fn continuous_trace_task(
     };
     let _ = app_handle.emit("continuous-trace-path-discovered", &discovered);
 
-    // 第二步：对每一跳持续 Ping
+    // 第二步：对每一跳独立循环 Ping（每跳一个 task，按自己的节拍）
+    //
+    // 设计动机：之前的实现是"全跳同步轮询"——所有跳并行 spawn 一次 ping，
+    // 等所有结果（包括超时跳的 timeout_ms）返回后才进入 sleep，导致快跳被慢跳拖累。
+    // 每跳独立循环后，每个跳点严格按 ping_interval_ms 节拍发出新点，互不干扰。
     let hop_ips: Vec<(u32, String)> = hops.iter()
         .map(|(num, ip, _)| (*num, ip.clone()))
         .collect();
 
     let interval = Duration::from_millis(ping_interval_ms as u64);
-    let timeout = timeout_ms;
-    let mut seq: u32 = 0;
 
-    // Path re-check state
-    let last_path: Vec<Option<String>> = hop_ips.iter()
-        .map(|(_, ip)| Some(ip.clone()))
-        .collect();
-    let mut last_recheck = std::time::Instant::now();
-    loop {
-        // 检查停止信号
-        if stop_rx.try_recv().is_ok() {
-            log::info!("Continuous trace to {} stopped by user", target);
-            break;
-        }
+    // 取消通道：调用 send(true) 后，所有持有 Receiver 的 task 通过 changed() 收到信号。
+    // 相比 Notify，watch 不要求 task 处于 await notified() 的瞬间状态——
+    // 即便错过广播，下一次 changed() 也能立即返回（因为最终值已变）。
+    let (cancel_tx, cancel_rx) = watch::channel::<bool>(false);
 
-        seq += 1;
-        let timestamp = chrono::Utc::now().timestamp_millis();
+    // 为每一跳启动一个独立的 ping 循环 task
+    let mut hop_handles = Vec::with_capacity(hop_ips.len());
+    for (hop_number, hop_ip) in hop_ips {
+        let ah = app_handle.clone();
+        let target_owned = target.clone();
+        let mut cancel_rx = cancel_rx.clone();
+        let timeout = timeout_ms;
+        let persist_for_hop = persist_handle.clone();
 
-        // 对每一跳并行 Ping
-        let mut handles = Vec::new();
-        for (hop_number, hop_ip) in &hop_ips {
-            let hop_ip = hop_ip.clone();
-            let hop_number = *hop_number;
-            let timeout = timeout;
+        let handle = tokio::spawn(async move {
+            // 每跳独立 ticker：未到 interval 不会发出新点；上一轮 ping 慢于 interval 时丢弃错过的 tick
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut seq: u32 = 0;
 
-            handles.push(tokio::spawn(async move {
-                let result = ping_once(&hop_ip, timeout, 64).await;
-                (hop_number, hop_ip, result)
-            }));
-        }
+            loop {
+                // 等下一拍或取消信号
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    _ = cancel_rx.changed() => return,
+                }
+                if *cancel_rx.borrow() { return; }
 
-        // 收集结果并发送事件
-        for handle in handles {
-            if let Ok((hop_number, hop_ip, result)) = handle.await {
-                let hop_result = match result {
-                    Ok(ping_result) => ContinuousTraceHopResult {
-                        target: target.clone(),
+                seq = seq.wrapping_add(1);
+                let timestamp = chrono::Utc::now().timestamp_millis();
+
+                // ping 时也要能被取消：避免长 timeout 阻塞退出
+                let ping_result = tokio::select! {
+                    res = ping_once(&hop_ip, timeout, 64) => Some(res),
+                    _ = cancel_rx.changed() => None,
+                };
+
+                let res = match ping_result {
+                    None => return, // 被取消
+                    Some(Ok(r)) => ContinuousTraceHopResult {
+                        target: target_owned.clone(),
                         hop_number,
-                        hop_ip,
-                        latency_ms: if ping_result.is_timeout { None } else { Some(ping_result.latency_ms.unwrap_or(0.0) as f64) },
-                        is_timeout: ping_result.is_timeout,
+                        hop_ip: hop_ip.clone(),
+                        latency_ms: if r.is_timeout { None } else { Some(r.latency_ms.unwrap_or(0.0) as f64) },
+                        is_timeout: r.is_timeout,
                         timestamp,
                         seq,
                     },
-                    Err(_) => ContinuousTraceHopResult {
-                        target: target.clone(),
+                    Some(Err(_)) => ContinuousTraceHopResult {
+                        target: target_owned.clone(),
                         hop_number,
-                        hop_ip,
+                        hop_ip: hop_ip.clone(),
                         latency_ms: None,
                         is_timeout: true,
                         timestamp,
@@ -191,57 +242,210 @@ async fn continuous_trace_task(
                     },
                 };
 
-                let _ = app_handle.emit("continuous-trace-hop-result", &hop_result);
-            }
-        }
+                let _ = ah.emit("continuous-trace-hop-result", &res);
 
-        // Periodic path re-check (non-blocking)
-        if last_recheck.elapsed().as_millis() >= PATH_RECHECK_INTERVAL_MS as u128 {
-            last_recheck = std::time::Instant::now();
-            let ah = app_handle.clone();
-            let tgt = target.clone();
-            let mh = max_hops;
-            let tm = timeout_ms;
-            let pm = probe_method.clone();
-            let old_path = last_path.clone();
-
-            tokio::spawn(async move {
-                let new_hops = discover_path(&ah, &tgt, mh, tm, &pm).await;
-                if !new_hops.is_empty() {
-                    let new_path: Vec<Option<String>> = new_hops.iter()
-                        .map(|(_, ip, _)| Some(ip.clone()))
-                        .collect();
-
-                    // Diff old vs new path
-                    if old_path != new_path {
-                        let old_ips: Vec<Option<String>> = old_path.clone();
-                        let new_ips = new_path.clone();
-                        let _ = ah.emit("path-changed", serde_json::json!({
-                            "target": tgt,
-                            "old": old_ips,
-                            "new": new_ips,
-                            "timestamp": chrono::Utc::now().timestamp_millis(),
-                        }));
+                // 持久化：推到 writer task（fire-and-forget，writer 批量落盘）
+                if let Some((session_id, persist_tx)) = &persist_for_hop {
+                    let sample = PersistSample {
+                        session_id: *session_id,
+                        hop_number: res.hop_number,
+                        seq: res.seq,
+                        latency_ms: res.latency_ms,
+                        is_timeout: res.is_timeout,
+                        timestamp: res.timestamp,
+                    };
+                    // try_send：channel 满了就丢弃这条样本（理论上 buffer 2048 + 500ms flush 不会满）
+                    if let Err(e) = persist_tx.try_send(PersistEvent::Sample(sample)) {
+                        log::warn!("trace persist channel full or closed: {:?}", e);
                     }
                 }
-            });
-        }
-
-        // 等待下一个间隔
-        tokio::select! {
-            _ = tokio::time::sleep(interval) => {},
-            _ = stop_rx.recv() => {
-                log::info!("Continuous trace to {} stopped during sleep", target);
-                break;
             }
-        }
+        });
+        hop_handles.push(handle);
+    }
+
+    // 路径重检测 task（独立于 ping 循环，5 分钟一次）
+    let recheck_handle = {
+        let ah = app_handle.clone();
+        let target_owned = target.clone();
+        let probe_method_owned = probe_method.clone();
+        let mut cancel_rx = cancel_rx.clone();
+        let initial_path: Vec<Option<String>> = hops.iter()
+            .map(|(_, ip, _)| Some(ip.clone()))
+            .collect();
+
+        tokio::spawn(async move {
+            let mut last_path = initial_path;
+            let recheck_interval = Duration::from_millis(PATH_RECHECK_INTERVAL_MS);
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(recheck_interval) => {}
+                    _ = cancel_rx.changed() => return,
+                }
+                if *cancel_rx.borrow() { return; }
+
+                let new_hops = discover_path(&ah, &target_owned, max_hops, timeout_ms, &probe_method_owned).await;
+                if new_hops.is_empty() { continue; }
+
+                let new_path: Vec<Option<String>> = new_hops.iter()
+                    .map(|(_, ip, _)| Some(ip.clone()))
+                    .collect();
+
+                if last_path != new_path {
+                    let _ = ah.emit("path-changed", serde_json::json!({
+                        "target": target_owned,
+                        "old": last_path.clone(),
+                        "new": new_path.clone(),
+                        "timestamp": chrono::Utc::now().timestamp_millis(),
+                    }));
+                    last_path = new_path;
+                }
+            }
+        })
+    };
+
+    // 主任务现在只负责等待停止信号，然后广播取消
+    let _ = stop_rx.recv().await;
+    log::info!("Continuous trace to {} stopping, cancelling all hop tasks", target);
+    let _ = cancel_tx.send(true);
+
+    // 等所有子 task 退出
+    for handle in hop_handles {
+        let _ = handle.await;
+    }
+    let _ = recheck_handle.await;
+
+    // 通知 writer：会话结束，flush 剩余样本并标记 status='stopped'
+    if let Some((session_id, persist_tx)) = persist_handle {
+        let now = chrono::Utc::now().timestamp_millis();
+        let _ = persist_tx.send(PersistEvent::SessionStopped(session_id, now)).await;
     }
 
     cleanup_session(&target).await;
 }
 
-/// 发现路径：运行 traceroute 并提取每一跳的 IP，同时做反向 DNS + GeoIP
+/// 发现路径：优先使用并行 ICMP raw socket（快），失败时回退到系统 traceroute 命令（兼容）。
+/// 同时做反向 DNS + GeoIP。
 async fn discover_path(
+    app_handle: &tauri::AppHandle,
+    target: &str,
+    max_hops: u32,
+    timeout_ms: u32,
+    probe_method: &str,
+) -> Vec<(u32, String, Option<String>)> {
+    // 第一步：尝试并行 ICMP traceroute（仅 ICMP 模式可用）
+    // UDP/TCP 模式直接走系统命令，因为我们没实现 UDP/TCP 的并行版本
+    if probe_method == "icmp" {
+        // 解析目标到 IPv4
+        if let Ok(ipv4) = resolve_target_ipv4(target).await {
+            log::info!("Trying parallel ICMP traceroute to {} ({})", target, ipv4);
+            match crate::services::fast_traceroute::parallel_icmp_traceroute(ipv4, max_hops, timeout_ms).await {
+                Ok(fast_hops) => {
+                    // 组装与原格式一致的结构（hop_number, ip, hostname=None）
+                    let mut hops: Vec<(u32, String, Option<String>)> = fast_hops
+                        .into_iter()
+                        .filter_map(|h| h.ip.map(|ip| (h.hop_number, ip, None)))
+                        .collect();
+
+                    if !hops.is_empty() {
+                        log::info!("Fast traceroute resolved {} hops with IPs", hops.len());
+                        // 反向 DNS + GeoIP
+                        enrich_hops_async(app_handle, target, &mut hops).await;
+                        return hops;
+                    } else {
+                        log::warn!("Fast traceroute returned no hops, falling back to system command");
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Fast traceroute failed ({}), falling back to system command", e);
+                }
+            }
+        } else {
+            log::warn!("Failed to resolve {} to IPv4, using system command", target);
+        }
+    }
+
+    // 回退到原有的"调系统 tracert/traceroute 命令"实现
+    discover_path_via_system_command(app_handle, target, max_hops, timeout_ms, probe_method).await
+}
+
+/// 把目标解析为 IPv4 地址
+async fn resolve_target_ipv4(target: &str) -> AppResult<std::net::Ipv4Addr> {
+    use std::net::ToSocketAddrs;
+    // 先试纯 IP 格式
+    if let Ok(ip) = target.parse::<std::net::Ipv4Addr>() {
+        return Ok(ip);
+    }
+    // 域名解析
+    let host = format!("{}:0", target);
+    let target_owned = target.to_string();
+    let ipv4 = tokio::task::spawn_blocking(move || -> Option<std::net::Ipv4Addr> {
+        host.to_socket_addrs().ok()?
+            .find_map(|addr| match addr.ip() {
+                std::net::IpAddr::V4(v4) => Some(v4),
+                _ => None,
+            })
+    }).await
+        .map_err(|e| AppError::TracerouteError(format!("DNS join 失败: {}", e)))?
+        .ok_or_else(|| AppError::TracerouteError(format!("无法解析 {} 到 IPv4", target_owned)))?;
+    Ok(ipv4)
+}
+
+/// 给已发现的跳异步补充反向 DNS + GeoIP 信息（直接修改 hostname 字段，并 emit hop-geo 事件）
+async fn enrich_hops_async(
+    app_handle: &tauri::AppHandle,
+    target: &str,
+    hops: &mut Vec<(u32, String, Option<String>)>,
+) {
+    let mut handles = Vec::new();
+    for (hop_num, ip, _) in hops.iter() {
+        let ip_str = ip.clone();
+        let hop_num = *hop_num;
+        let target_owned = target.to_string();
+        let ah = app_handle.clone();
+
+        handles.push(tokio::spawn(async move {
+            let ip_addr: std::net::IpAddr = match ip_str.parse() {
+                Ok(a) => a,
+                Err(_) => return (hop_num, None),
+            };
+            let (hostname_res, geo_res) = tokio::join!(
+                reverse_lookup(&ip_addr),
+                geoip::lookup_one(&ip_addr)
+            );
+            let hostname = hostname_res.ok().flatten();
+            if let Some(geo) = geo_res {
+                let _ = ah.emit("continuous-trace-hop-geo", serde_json::json!({
+                    "target": target_owned,
+                    "hop_number": hop_num,
+                    "ip": ip_str,
+                    "geo": geo,
+                    "hostname": hostname,
+                }));
+            } else if hostname.is_some() {
+                let _ = ah.emit("continuous-trace-hop-geo", serde_json::json!({
+                    "target": target_owned,
+                    "hop_number": hop_num,
+                    "ip": ip_str,
+                    "geo": null,
+                    "hostname": hostname,
+                }));
+            }
+            (hop_num, hostname)
+        }));
+    }
+
+    for handle in handles {
+        if let Ok((hop_num, hostname)) = handle.await {
+            if let Some(slot) = hops.iter_mut().find(|(n, _, _)| *n == hop_num) {
+                slot.2 = hostname;
+            }
+        }
+    }
+}
+
+/// 调用系统 traceroute 命令实现路径发现（回退方案）
+async fn discover_path_via_system_command(
     app_handle: &tauri::AppHandle,
     target: &str,
     max_hops: u32,
@@ -311,53 +515,8 @@ async fn discover_path(
         }
     }
 
-    // Do reverse DNS + GeoIP for each hop in parallel
-    let mut geo_handles = Vec::new();
-    for (hop_num, ip, _) in &hops {
-        let ip_str = ip.clone();
-        let hop_num = *hop_num;
-        let target_owned = target.to_string();
-        let ah = app_handle.clone();
-
-        geo_handles.push(tokio::spawn(async move {
-            let ip_addr: std::net::IpAddr = ip_str.parse().ok()?;
-            let (hostname_res, geo_res) = tokio::join!(
-                reverse_lookup(&ip_addr),
-                geoip::lookup_one(&ip_addr)
-            );
-
-            let hostname = hostname_res.ok().flatten();
-
-            // Emit geo info to frontend
-            if let Some(geo) = geo_res {
-                let _ = ah.emit("continuous-trace-hop-geo", serde_json::json!({
-                    "target": target_owned,
-                    "hop_number": hop_num,
-                    "ip": ip_str,
-                    "geo": geo,
-                    "hostname": hostname,
-                }));
-            } else if hostname.is_some() {
-                // Still emit just the hostname even without geo
-                let _ = ah.emit("continuous-trace-hop-geo", serde_json::json!({
-                    "target": target_owned,
-                    "hop_number": hop_num,
-                    "ip": ip_str,
-                    "geo": null,
-                    "hostname": hostname,
-                }));
-            }
-
-            Some(hostname)
-        }));
-    }
-
-    // Wait for all geo lookups and update hostnames
-    for (i, handle) in geo_handles.into_iter().enumerate() {
-        if let Ok(Some(hostname)) = handle.await {
-            hops[i].2 = hostname;
-        }
-    }
+    // 反向 DNS + GeoIP（共享 enrich 逻辑）
+    enrich_hops_async(app_handle, target, &mut hops).await;
 
     // 通知前端发现进度
     let _ = app_handle.emit("continuous-trace-discovering", &format!("发现 {} 跳", hops.len()));

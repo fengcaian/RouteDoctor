@@ -3,18 +3,16 @@ use tokio::sync::Mutex;
 use rusqlite::{Connection, params};
 use tauri::Manager;
 use crate::models::ping::PingResult;
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
+use crate::storage::paths::resolve_data_dir;
 
 /// Database state wrapper
 pub struct DbState(pub Arc<Mutex<Connection>>);
 
 /// Initialize database
 pub fn init_database(app_handle: &tauri::AppHandle) -> AppResult<()> {
-    let app_dir = app_handle.path().app_data_dir()
-        .map_err(|e| AppError::Internal(format!("Failed to get app data dir: {}", e)))?;
-
-    // Create directory if it doesn't exist
-    std::fs::create_dir_all(&app_dir)?;
+    // 解析数据目录（自动判断便携模式 vs AppData）
+    let app_dir = resolve_data_dir(app_handle)?;
 
     let db_path = app_dir.join("history.db");
     let conn = Connection::open(&db_path)?;
@@ -55,6 +53,71 @@ pub fn init_database(app_handle: &tauri::AppHandle) -> AppResult<()> {
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_ping_results_timestamp ON ping_results(timestamp)",
         [],
+    )?;
+
+    // ===== Trace 持久化表（PingPlotter Pro 风格的会话恢复） =====
+    // 一次"路径监控会话" = 一行 trace_session + N 行 trace_hop_info + 海量 trace_hop_sample
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS trace_session (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER,
+            ping_interval_ms INTEGER NOT NULL,
+            timeout_ms INTEGER NOT NULL,
+            probe_method TEXT NOT NULL,
+            status TEXT NOT NULL  -- 'running' | 'stopped' | 'crashed'
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS trace_hop_info (
+            session_id INTEGER NOT NULL,
+            hop_number INTEGER NOT NULL,
+            ip TEXT,
+            hostname TEXT,
+            geo_json TEXT,
+            PRIMARY KEY (session_id, hop_number),
+            FOREIGN KEY (session_id) REFERENCES trace_session(id)
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS trace_hop_sample (
+            session_id INTEGER NOT NULL,
+            hop_number INTEGER NOT NULL,
+            seq INTEGER NOT NULL,
+            latency_ms REAL,
+            is_timeout INTEGER NOT NULL,
+            timestamp INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES trace_session(id)
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trace_session_target ON trace_session(target)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trace_session_status ON trace_session(status)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trace_hop_sample_session ON trace_hop_sample(session_id, hop_number, timestamp)",
+        [],
+    )?;
+
+    // 启动时把所有 'running' 状态的 session 标记为 'crashed'
+    // —— 它们一定是上次进程退出时未正常停止的
+    conn.execute(
+        "UPDATE trace_session SET status = 'crashed', ended_at = ?1
+         WHERE status = 'running'",
+        params![chrono::Utc::now().timestamp_millis()],
     )?;
 
     // Store connection in app state

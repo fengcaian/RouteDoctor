@@ -14,6 +14,10 @@ use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri_plugin_autostart::MacosLauncher;
 
+/// 应用级 state：持有 trace 持久化 writer 的 mpsc Sender。
+/// 各路径监控会话克隆此 Sender 后向 writer 推送样本。
+pub struct TracePersistState(pub tokio::sync::mpsc::Sender<storage::trace_persist::PersistEvent>);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Initialize logger for debug builds
@@ -39,6 +43,11 @@ pub fn run() {
             tauri::async_runtime::block_on(async {
                 services::icmp_engine::init();
             });
+
+            // Spawn the trace persistence writer task. The Sender is stored as app state
+            // so trace tasks can clone it on demand.
+            let persist_tx = storage::trace_persist::spawn_writer(app_handle.clone());
+            app.manage(TracePersistState(persist_tx));
 
             // Build tray menu
             let show_item = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
@@ -150,6 +159,11 @@ pub fn run() {
             commands::traceroute::stop_traceroute,
             commands::continuous_trace::start_continuous_trace,
             commands::continuous_trace::stop_continuous_trace,
+            commands::continuous_trace::list_trace_sessions,
+            commands::continuous_trace::load_trace_hops,
+            commands::continuous_trace::load_trace_samples,
+            commands::continuous_trace::delete_trace_session,
+            commands::continuous_trace::cleanup_old_trace_sessions,
             commands::bandwidth::start_bandwidth_test,
             commands::bandwidth::stop_bandwidth_test,
             commands::history::get_history,
@@ -164,6 +178,7 @@ pub fn run() {
             commands::settings::is_autostart_enabled,
             commands::settings::set_autostart,
             commands::settings::quit_app,
+            commands::settings::get_app_runtime_info,
             commands::alerts::trigger_webhook,
         ])
         .run(tauri::generate_context!())

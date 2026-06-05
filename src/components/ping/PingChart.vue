@@ -216,20 +216,36 @@ function getVisibleRange(): { startIdx: number; endIdx: number } {
   return { startIdx, endIdx }
 }
 
-function computeYAxis(startIdx: number, endIdx: number): { yMax: number; tickStep: number } {
-  let max = 0
+function computeYAxis(startIdx: number, endIdx: number): { yMin: number; yMax: number; tickStep: number } {
+  let min = Infinity
+  let max = -Infinity
   for (let i = startIdx; i <= endIdx; i++) {
     const v = samples[i]?.latency
-    if (v != null && v > max) max = v
+    if (v != null) {
+      if (v > max) max = v
+      if (v < min) min = v
+    }
   }
-  // 至少展示 100ms 的范围
-  if (max < 100) max = 100
-  // 向上取整到合适的整数刻度
-  const niceMax = niceCeil(max * 1.15)
-  // 自动选择刻度间距：5 个刻度
-  const tickStep = niceCeil(niceMax / 5)
-  const yMax = tickStep * 5
-  return { yMax, tickStep }
+  // 没有有效数据时给一个默认范围
+  if (!isFinite(min) || !isFinite(max)) {
+    return { yMin: 0, yMax: 100, tickStep: 20 }
+  }
+
+  // 上下各留 20% padding，并保证至少展示 10ms 的跨度（避免完全一条直线时除零）
+  const range = Math.max(max - min, 10)
+  const padding = range * 0.2
+  let yMin = Math.max(0, min - padding)
+  let yMax = max + padding
+
+  // 选 nice 的刻度间距，并把 yMin/yMax 对齐到刻度边界
+  const span = yMax - yMin
+  const tickStep = niceCeil(span / 5)
+  yMin = Math.floor(yMin / tickStep) * tickStep
+  yMax = Math.ceil(yMax / tickStep) * tickStep
+  // 确保至少有 4 段（5 个刻度），保证图表纵向利用度
+  while ((yMax - yMin) / tickStep < 4) yMax += tickStep
+
+  return { yMin, yMax, tickStep }
 }
 
 function niceCeil(v: number): number {
@@ -263,9 +279,10 @@ function draw() {
 
   const { startIdx, endIdx } = getVisibleRange()
   const hasData = endIdx >= startIdx
-  const { yMax, tickStep } = hasData
+  const { yMin, yMax, tickStep } = hasData
     ? computeYAxis(startIdx, endIdx)
-    : { yMax: 100, tickStep: 20 }
+    : { yMin: 0, yMax: 100, tickStep: 20 }
+  const ySpan = yMax - yMin || 1
 
   // ===== 1. 网格线 + Y 轴标签 =====
   c.strokeStyle = gridColor
@@ -275,20 +292,23 @@ function draw() {
   c.textAlign = 'right'
   c.textBaseline = 'middle'
 
-  for (let val = 0; val <= yMax; val += tickStep) {
-    const y = plotBottom - (val / yMax) * plotHeight
+  for (let val = yMin; val <= yMax + 0.001; val += tickStep) {
+    const y = plotBottom - ((val - yMin) / ySpan) * plotHeight
     c.beginPath()
     c.moveTo(plotLeft, Math.round(y) + 0.5)
     c.lineTo(plotRight, Math.round(y) + 0.5)
     c.stroke()
-    c.fillText(`${val}`, plotLeft - 6, y)
+    // 刻度数字：整数显示无小数，非整数保留 1 位小数（避免 tickStep 为 2.5 等浮点 step 时显示混乱）
+    const label = Number.isInteger(val) ? `${val}` : val.toFixed(1)
+    c.fillText(label, plotLeft - 6, y)
   }
 
-  // Y 轴单位（ms）
+  // Y 轴单位（ms）— 放在左上角独立位置，水平上远离刻度数字（数字在 plotLeft-6 处右对齐），
+  // 垂直上位于最大刻度数字之上，确保两者不重叠
   c.textAlign = 'left'
   c.textBaseline = 'top'
   c.fillStyle = textColor
-  c.fillText('ms', plotLeft - 24, 2)
+  c.fillText('ms', 4, 4)
 
   // ===== 2. 坐标轴 =====
   c.strokeStyle = axisColor
@@ -356,7 +376,7 @@ function draw() {
       continue
     }
     const x = rightX - (endIdx - i) * POINT_GAP + offset
-    const y = plotBottom - (s.latency / yMax) * plotHeight
+    const y = plotBottom - ((s.latency - yMin) / ySpan) * plotHeight
     if (!pathStarted) {
       c.beginPath()
       c.moveTo(x, y)
@@ -386,7 +406,7 @@ function draw() {
         c.lineTo(x - 3, y + 3)
         c.stroke()
       } else {
-        const y = plotBottom - (s.latency / yMax) * plotHeight
+        const y = plotBottom - ((s.latency - yMin) / ySpan) * plotHeight
         c.fillStyle = LINE_COLOR
         c.beginPath()
         c.arc(x, y, 2.5, 0, Math.PI * 2)
@@ -434,7 +454,7 @@ function draw() {
     c.stroke()
     c.setLineDash([])
     if (!h.sample.isTimeout && h.sample.latency != null) {
-      const y = plotBottom - (h.sample.latency / yMax) * plotHeight
+      const y = plotBottom - ((h.sample.latency - yMin) / ySpan) * plotHeight
       c.fillStyle = '#fff'
       c.beginPath()
       c.arc(h.x, y, 4, 0, Math.PI * 2)

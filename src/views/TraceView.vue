@@ -2,13 +2,16 @@
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import TraceLatencyChart from '@/components/traceroute/TraceLatencyChart.vue'
+import TraceSessionHistory from '@/components/traceroute/TraceSessionHistory.vue'
 import { useContinuousTrace, useContinuousTraceListener } from '@/composables/useContinuousTrace'
 import { useContinuousTraceStore } from '@/stores/continuousTraceStore'
+import { useSettingsStore } from '@/stores/settingsStore'
 import { useToast } from '@/composables/useToast'
 import type { ContinuousTraceHopResult, PathDiscovered } from '@/composables/useContinuousTrace'
 
 const { t } = useI18n()
 const store = useContinuousTraceStore()
+const settingsStore = useSettingsStore()
 const toast = useToast()
 const { startContinuousTrace, stopContinuousTrace } = useContinuousTrace()
 
@@ -17,6 +20,12 @@ const pingInterval = ref(2000)
 const maxHops = ref(30)
 const timeoutMs = ref(3000)
 const probeMethod = ref<'icmp' | 'udp' | 'tcp'>('icmp')
+
+// 历史会话抽屉
+const historyOpen = ref(false)
+
+// 输入区禁用条件：实时监控中 OR 正在查看历史会话
+const inputsDisabled = computed(() => store.isRunning || store.isHistoricalView)
 
 // 选中显示在折线图上的跳号集合
 const selectedHopNumbers = ref<number[]>([])
@@ -77,6 +86,7 @@ function colorForHop(hopNumber: number): string {
 // 监听事件
 useContinuousTraceListener(
   (data: PathDiscovered) => {
+    console.log('[TraceView] path-discovered received', data.hops.length, 'hops, target=', data.target)
     store.setPath(data)
     toast.success(`路径发现完成：${data.hops.length} 跳，开始持续监控`)
   },
@@ -94,9 +104,23 @@ useContinuousTraceListener(
 
 async function handleStart() {
   if (!targetInput.value.trim()) return
+
+  // 根据设置项 traceWindowMinutes 和 pingInterval 计算滑动窗口大小
+  // 例如 60 分钟 / 2 秒 = 1800 个样本
+  const windowMinutes = settingsStore.settings.traceWindowMinutes || 60
+  const samplesPerWindow = Math.ceil((windowMinutes * 60 * 1000) / pingInterval.value)
+  store.setMaxSamples(samplesPerWindow)
+
   store.startMonitoring(targetInput.value.trim())
   try {
-    await startContinuousTrace(targetInput.value.trim(), maxHops.value, timeoutMs.value, pingInterval.value, probeMethod.value)
+    await startContinuousTrace(
+      targetInput.value.trim(),
+      maxHops.value,
+      timeoutMs.value,
+      pingInterval.value,
+      probeMethod.value,
+      settingsStore.settings.tracePersistEnabled
+    )
   } catch (e: any) {
     toast.error(`启动失败: ${typeof e === 'string' ? e : e.message || '未知错误'}`)
     store.stopMonitoring()
@@ -157,6 +181,20 @@ function getLatencyClass(avg: number): string {
         <h2>{{ $t('traceroute.title') }}</h2>
         <p class="subtitle">{{ $t('traceroute.subtitle') }}</p>
       </div>
+      <div class="header-actions">
+        <button class="history-btn" @click="historyOpen = true">
+          📂 {{ t('traceHistory.button') }}
+        </button>
+      </div>
+    </div>
+
+    <!-- 历史模式横幅 -->
+    <div v-if="store.isHistoricalView" class="history-banner">
+      <span class="banner-icon">👁</span>
+      <span class="banner-text">{{ t('traceHistory.viewBanner') }}</span>
+      <button class="banner-exit" @click="store.exitHistoricalView()">
+        {{ t('traceHistory.exitView') }}
+      </button>
     </div>
 
     <!-- 配置区 -->
@@ -169,7 +207,7 @@ function getLatencyClass(avg: number): string {
             type="text"
             class="config-input"
             :placeholder="t('common.targetPlaceholder')"
-            :disabled="store.isRunning"
+            :disabled="inputsDisabled"
             @keyup.enter="handleStart"
           />
         </div>
@@ -180,7 +218,7 @@ function getLatencyClass(avg: number): string {
             type="number"
             class="config-input"
             min="1000" max="10000" step="500"
-            :disabled="store.isRunning"
+            :disabled="inputsDisabled"
           />
         </div>
         <div class="config-field">
@@ -190,7 +228,7 @@ function getLatencyClass(avg: number): string {
             type="number"
             class="config-input"
             min="5" max="64"
-            :disabled="store.isRunning"
+            :disabled="inputsDisabled"
           />
         </div>
         <div class="config-field">
@@ -200,7 +238,7 @@ function getLatencyClass(avg: number): string {
             type="number"
             class="config-input"
             min="1000" max="10000" step="500"
-            :disabled="store.isRunning"
+            :disabled="inputsDisabled"
           />
         </div>
         <div class="config-field">
@@ -210,7 +248,7 @@ function getLatencyClass(avg: number): string {
               v-for="method in ['icmp', 'udp', 'tcp'] as const"
               :key="method"
               :class="['probe-btn', { active: probeMethod === method }]"
-              :disabled="store.isRunning"
+              :disabled="inputsDisabled"
               @click="probeMethod = method"
             >
               {{ method.toUpperCase() }}
@@ -223,7 +261,7 @@ function getLatencyClass(avg: number): string {
           v-if="!store.isRunning"
           class="start-btn"
           @click="handleStart"
-          :disabled="!targetInput.trim()"
+          :disabled="!targetInput.trim() || store.isHistoricalView"
         >
           {{ t('continuousTrace.start') }}
         </button>
@@ -233,7 +271,7 @@ function getLatencyClass(avg: number): string {
         <button
           class="clear-btn"
           @click="handleClear"
-          :disabled="store.isRunning"
+          :disabled="inputsDisabled"
         >
           {{ t('traceroute.clearData') }}
         </button>
@@ -307,6 +345,9 @@ function getLatencyClass(avg: number): string {
       <div class="empty-icon">🗺️</div>
       <p>{{ t('continuousTrace.emptyHint') }}</p>
     </div>
+
+    <!-- 历史会话抽屉 -->
+    <TraceSessionHistory v-model:open="historyOpen" />
   </div>
 </template>
 
@@ -322,6 +363,11 @@ function getLatencyClass(avg: number): string {
 }
 
 .view-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+
   h2 {
     font-size: 20px;
     font-weight: 700;
@@ -332,6 +378,67 @@ function getLatencyClass(avg: number): string {
     font-size: 12px;
     color: var(--text-muted);
     margin-top: 2px;
+  }
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.history-btn {
+  padding: 6px 14px;
+  background: var(--input-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+
+  &:hover {
+    background: var(--hover-bg);
+    border-color: var(--accent-color);
+  }
+}
+
+.history-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: rgba(76, 175, 80, 0.08);
+  border: 1px solid rgba(76, 175, 80, 0.3);
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-size: 12px;
+
+  .banner-icon {
+    font-size: 14px;
+  }
+
+  .banner-text {
+    flex: 1;
+    font-weight: 500;
+  }
+
+  .banner-exit {
+    padding: 4px 12px;
+    background: transparent;
+    border: 1px solid #4CAF50;
+    color: #4CAF50;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+
+    &:hover {
+      background: rgba(76, 175, 80, 0.15);
+    }
   }
 }
 

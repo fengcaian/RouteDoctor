@@ -134,6 +134,10 @@ export interface AppSettings {
   defaultTracerouteMaxHops: number
   minimizeToTray: boolean
   autostart: boolean
+  /** 路径监控折线图保留多少分钟的数据用于绘制（滑动窗口） */
+  traceWindowMinutes: number
+  /** 是否启用持久化（实时落盘 + 会话恢复） */
+  tracePersistEnabled: boolean
 }
 
 // Default settings
@@ -144,7 +148,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultPingTimeout: 3000,
   defaultTracerouteMaxHops: 30,
   minimizeToTray: true,
-  autostart: false
+  autostart: false,
+  traceWindowMinutes: 60,
+  tracePersistEnabled: true
 }
 
 // DNS 查询相关类型

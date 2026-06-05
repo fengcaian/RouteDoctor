@@ -39,3 +39,22 @@ pub async fn quit_app(app: tauri::AppHandle) {
     }
     app.exit(0);
 }
+
+/// 应用运行时信息：用于"关于"页或调试展示数据存放位置和模式
+#[derive(serde::Serialize)]
+pub struct AppRuntimeInfo {
+    /// 是否便携模式（exe 同目录有 portable.txt）
+    pub portable: bool,
+    /// 实际使用的数据目录绝对路径
+    pub data_dir: String,
+}
+
+#[tauri::command]
+pub fn get_app_runtime_info(app: tauri::AppHandle) -> Result<AppRuntimeInfo, String> {
+    let portable = crate::storage::paths::is_portable_mode();
+    let data_dir = crate::storage::paths::resolve_data_dir(&app)
+        .map_err(|e| e.to_string())?
+        .to_string_lossy()
+        .to_string();
+    Ok(AppRuntimeInfo { portable, data_dir })
+}

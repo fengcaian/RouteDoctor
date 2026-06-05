@@ -39,14 +39,16 @@ export function useContinuousTrace() {
     maxHops: number = 30,
     timeoutMs: number = 3000,
     pingIntervalMs: number = 2000,
-    probeMethod: string = 'icmp'
+    probeMethod: string = 'icmp',
+    persist: boolean = true
   ): Promise<void> {
     await invoke('start_continuous_trace', {
       target,
       maxHops,
       timeoutMs,
       pingIntervalMs,
-      probeMethod
+      probeMethod,
+      persist
     })
   }
 

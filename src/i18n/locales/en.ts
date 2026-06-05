@@ -17,13 +17,11 @@ export default {
   // Sidebar navigation
   nav: {
     ping: 'Ping',
-    traceroute: 'Traceroute',
+    traceroute: 'Path Monitor',
     bandwidth: 'Bandwidth',
     history: 'History',
     dns: 'DNS Lookup',
     networkInfo: 'Network Info',
-    pathMonitor: 'Path Monitor',
-    continuousTrace: 'Path Monitor',
     alerts: 'Alerts',
     settings: 'Settings',
     backHome: 'Back to Home',
@@ -112,8 +110,8 @@ export default {
 
   // Traceroute page
   traceroute: {
-    title: 'Traceroute',
-    subtitle: 'Network path discovery and hop analysis',
+    title: 'Path Monitor',
+    subtitle: 'Discover the network path to the target and continuously ping each hop for latency and loss',
     startTrace: 'Start Trace',
     tracing: 'Tracing... Click to stop',
     clearData: 'Clear Data',
@@ -288,37 +286,6 @@ export default {
     emptyHint: 'Enter a target to start continuous path monitoring',
   },
 
-  // Path monitor view
-  pathMonitor: {
-    title: 'Path Monitor',
-    subtitle: 'Continuously ping each hop to detect network bottlenecks in real-time',
-    target: 'Target',
-    hops: 'Hops',
-    samples: 'Samples',
-    running: 'Running',
-    stopped: 'Stopped',
-    interval: 'Interval (ms)',
-    start: 'Start Monitor',
-    stop: 'Stop Monitor',
-    discovering: 'Discovering...',
-    current: 'Current',
-    loss: 'Loss',
-    sent: 'Sent',
-    heatmapEmpty: 'Waiting for samples...',
-  },
-
-  // Path monitor - latency chart
-  pathLatency: {
-    modeLive: 'Live',
-    modeHistory: 'History',
-    backToLive: 'Back to Live',
-    samples: 'Samples',
-    timeout: 'Timeout',
-    empty: 'No data yet',
-    emptyHint: 'Click a row below to plot a hop\'s latency in real time',
-    tableTip: 'Click a row to switch hop · Ctrl+Click to compare multiple hops',
-  },
-
   // Traceroute - real-time latency chart
   traceLatency: {
     title: 'Per-Hop Latency Live Monitor',
@@ -330,6 +297,35 @@ export default {
     empty: 'No data yet',
     emptyHint: 'Click an IP row in the table below to view its latency curve',
     tableTip: 'Click a row to switch hop · Ctrl+Click to compare multiple hops',
+  },
+
+  // Path monitor - session history
+  traceHistory: {
+    title: 'Session History',
+    button: 'History',
+    refresh: 'Refresh',
+    empty: 'No saved sessions yet',
+    emptyHint: 'Sessions are recorded here automatically once monitoring runs',
+    target: 'Target',
+    startedAt: 'Started',
+    duration: 'Duration',
+    samples: 'Samples',
+    status: 'Status',
+    statusRunning: 'Running',
+    statusStopped: 'Stopped',
+    statusCrashed: 'Crashed',
+    statusViewing: 'Viewing',
+    interval: 'Interval',
+    method: 'Method',
+    load: 'Load',
+    loading: 'Loading...',
+    delete: 'Delete',
+    deleteConfirm: 'Delete this session and all its samples?',
+    confirmReplace: 'A monitor is currently running. Loading history will stop it. Continue?',
+    exitView: 'Exit View',
+    viewBanner: 'Viewing historical session (read-only)',
+    loadLimit: 'Last {n} samples',
+    loadFailed: 'Failed to load',
   },
 
   // DNS lookup page
