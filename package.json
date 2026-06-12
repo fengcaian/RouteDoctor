@@ -1,5 +1,5 @@
 {
-  "name": "pingplotter-next",
+  "name": "routedoctor",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "setup:npcap-sdk": "node ./scripts/setup-npcap-sdk.mjs",
+    "tauri:build": "npm run setup:npcap-sdk && tauri build",
+    "tauri:dev": "npm run setup:npcap-sdk && tauri dev"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

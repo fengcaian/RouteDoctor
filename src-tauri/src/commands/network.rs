@@ -480,3 +480,12 @@ pub async fn geoip_lookup_batch(
     let parsed: Vec<IpAddr> = ips.iter().filter_map(|s| s.parse().ok()).collect();
     Ok(crate::services::geoip::lookup_batch(&parsed).await)
 }
+
+/// 检测 Npcap 是否安装。前端启动时调用一次，根据返回值显示 UI 提示。
+///
+/// Npcap 装了 → UDP/TCP 模式可以拿到真实中间跳（待阶段 2 集成 pcap crate 后启用）
+/// Npcap 没装 → UDP/TCP 模式中间跳由 ICMP 兜底（当前现状），UI 引导用户去官网下载
+#[tauri::command]
+pub fn get_npcap_status() -> crate::services::npcap::detect::NpcapStatus {
+    crate::services::npcap::detect::detect_npcap()
+}

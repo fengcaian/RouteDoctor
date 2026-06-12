@@ -50,6 +50,7 @@ export const useContinuousTraceStore = defineStore('continuousTrace', () => {
   const loadedSessionStartedAt = ref<number | null>(null)
   const loadedSessionEndedAt = ref<number | null>(null)
   const loadedSessionStatus = ref<string | null>(null)
+  const loadedProbeMethod = ref<string | null>(null)
 
   // 滑动窗口大小（仅影响绘图，不影响累计统计）
   // 由调用方根据 windowMinutes / pingIntervalMs 计算后通过 setMaxSamples 注入
@@ -254,6 +255,7 @@ export const useContinuousTraceStore = defineStore('continuousTrace', () => {
     loadedSessionStartedAt.value = null
     loadedSessionEndedAt.value = null
     loadedSessionStatus.value = null
+    loadedProbeMethod.value = null
   }
 
   /**
@@ -268,6 +270,7 @@ export const useContinuousTraceStore = defineStore('continuousTrace', () => {
       started_at: number
       ended_at: number | null
       status: string
+      probe_method?: string
     },
     hopRows: Array<{
       hop_number: number
@@ -286,13 +289,13 @@ export const useContinuousTraceStore = defineStore('continuousTrace', () => {
     // 重置当前状态（与实时监控完全隔离）
     resetStore()
 
-    isHistoricalView.value = true
     isRunning.value = false
     isDiscovering.value = false
     loadedSessionId.value = session.id
     loadedSessionStartedAt.value = session.started_at
     loadedSessionEndedAt.value = session.ended_at
     loadedSessionStatus.value = session.status
+    loadedProbeMethod.value = session.probe_method ?? null
     target.value = session.target
 
     // 历史模式下扩容滑动窗口，确保所有样本都能呈现
@@ -353,6 +356,11 @@ export const useContinuousTraceStore = defineStore('continuousTrace', () => {
     }
 
     hopHistories.value = histories
+
+    // 数据全部就位后再切换历史模式标志位，下游 watcher 这时能拿到完整 hopHistories
+    // 进而把 X 轴对齐到数据范围。如果先翻 isHistoricalView 再填数据,watcher 触发时
+    // hopHistories 还是空的,会导致视口对齐失败,RAF tick 把 viewEnd 推到当前时间。
+    isHistoricalView.value = true
   }
 
   /** 退出历史只读模式，回到空白状态准备新的实时监控 */
@@ -371,6 +379,7 @@ export const useContinuousTraceStore = defineStore('continuousTrace', () => {
     loadedSessionStartedAt,
     loadedSessionEndedAt,
     loadedSessionStatus,
+    loadedProbeMethod,
     maxSamplesPerHop,
     setMaxSamples,
     setPath,

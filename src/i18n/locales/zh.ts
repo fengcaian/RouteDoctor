@@ -45,7 +45,7 @@ export default {
     networkInfo: '网络信息',
     networkInfoDesc: '本机网络配置',
     gettingStarted: '快速开始',
-    welcome: '欢迎使用 PingPlotter Next！此工具帮助你监控和诊断网络问题。',
+    welcome: '欢迎使用 RouteDoctor！此工具帮助你监控和诊断网络问题。',
     tipPing: '持续监控到任意目标的延迟和丢包率。',
     tipTrace: '发现网络路径并识别瓶颈。',
     tipBandwidth: '测量你的下载和上传速度。',
@@ -120,6 +120,25 @@ export default {
     probeMethod: '探测方式',
     pros: '优点：',
     cons: '缺点：',
+    // Npcap 相关提示
+    npcapTip: {
+      enhanced: '✓ 已启用 Npcap，可获取真实 {protocol} 路径',
+      basic: '当前由 ICMP 兜底，安装 Npcap 可获取真实 {protocol} 路径',
+      learnMore: '了解详情',
+      dialogTitle: '安装 Npcap 解锁完整 {protocol} 路径追踪',
+      dialogIntro: 'Windows 系统限制下，应用无法直接接收由 UDP/TCP 探测包触发的 ICMP 反馈，因此中间路由器目前由 ICMP 协议代为探测。',
+      dialogBenefit: '安装 Npcap 后可以解锁：',
+      benefit1: '中间路由器使用真实 {protocol} 协议探测',
+      benefit2: '检测协议路径分歧（ECMP）',
+      benefit3: '诊断"ICMP 通但 {protocol} 不通"等防火墙问题',
+      dialogTrust: 'Npcap 是开源工具，被 Wireshark、Nmap 等专业网络工具广泛使用。',
+      dialogSize: '约 1MB，安装无需重启。',
+      openDownload: '打开下载页',
+      remindLater: '稍后再说',
+      keepBasic: '继续使用基础模式',
+      installed: 'Npcap 已安装（版本 {version}）',
+      installedNoVersion: 'Npcap 已安装',
+    },
     // 图表和表格
     local: '本机',
     initializing: '正在初始化路由追踪...',
@@ -297,6 +316,7 @@ export default {
     empty: '暂无数据',
     emptyHint: '在下方表格中点击 IP 行以查看该节点的延迟曲线',
     tableTip: '点击行切换节点 · Ctrl+点击 追加多个节点对比',
+    wheelHint: '按住 Ctrl 滚动鼠标可缩放图表',
   },
 
   // 路径监控 - 历史会话
@@ -324,7 +344,7 @@ export default {
     confirmReplace: '当前会话仍在运行，加载历史会停止当前会话。是否继续？',
     exitView: '退出查看',
     viewBanner: '正在查看历史会话（只读）',
-    loadLimit: '最近 {n} 条样本',
+    loadLimit: '已加载 {hops} 个节点 · 共 {n} 条样本',
     loadFailed: '加载失败',
   },
 

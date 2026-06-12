@@ -223,19 +223,84 @@ async fn run_icmp_traceroute(
     finalize_result(&app_handle, result, &config.target, session_id).await;
 }
 
-/// UDP traceroute - uses system tracert command on Windows
+/// UDP traceroute - 优先用并行 UDP；失败时用并行 ICMP（与 Windows tracert 等价但快得多）
 async fn run_udp_traceroute(
     app_handle: tauri::AppHandle,
     config: TracerouteConfig,
     target_ip: IpAddr,
     stop_rx: Receiver<()>,
 ) {
-    // On Windows, use system tracert command which uses ICMP and works reliably
-    // UDP traceroute with raw sockets requires admin privileges
+    // 仅 IPv4 支持快速并行实现；IPv6 直接回退
+    if let IpAddr::V4(ipv4) = target_ip {
+        log::info!("Trying parallel UDP traceroute to {} ({})", config.target, ipv4);
+        let fast = crate::services::fast_udp_traceroute::parallel_udp_traceroute(
+            ipv4, config.max_hops, config.timeout_ms,
+        ).await;
+
+        let fast_hops = match fast {
+            Ok(hops) if hops.iter().any(|h| h.ip.is_some()) => Some(hops),
+            Ok(_) => {
+                log::warn!("Parallel UDP returned no hops, will try parallel ICMP fallback");
+                None
+            }
+            Err(e) => {
+                log::warn!("Parallel UDP failed ({}), will try parallel ICMP fallback", e);
+                None
+            }
+        };
+
+        // UDP fast 失败时优先走并行 ICMP（仍是 raw socket，速度同级）
+        let final_hops = if let Some(h) = fast_hops {
+            Some(h)
+        } else {
+            log::info!("Trying parallel ICMP fallback for UDP traceroute to {}", config.target);
+            match crate::services::fast_traceroute::parallel_icmp_traceroute(
+                ipv4, config.max_hops, config.timeout_ms,
+            ).await {
+                Ok(h) if h.iter().any(|x| x.ip.is_some()) => Some(h),
+                _ => None,
+            }
+        };
+
+        if let Some(fast_hops) = final_hops {
+            let start_time = chrono::Utc::now().timestamp_millis();
+            let session_id = crate::storage::database::create_ping_session(
+                &app_handle,
+                &config.target,
+                "traceroute",
+            ).await.unwrap_or(0);
+
+            let mut result = TracerouteResult {
+                target: config.target.clone(),
+                target_ip: target_ip.to_string(),
+                hops: Vec::new(),
+                completed: true,
+                start_time,
+                end_time: None,
+                probe_method: ProbeMethod::Udp,
+            };
+            for fh in fast_hops {
+                let hop = HopResult {
+                    hop_number: fh.hop_number,
+                    ip: fh.ip,
+                    hostname: None,
+                    latencies: vec![fh.rtt_ms],
+                    avg_latency: fh.rtt_ms,
+                    packet_loss: if fh.rtt_ms.is_some() { 0.0 } else { 100.0 },
+                };
+                process_hop(&app_handle, &config.target, hop, &mut result).await;
+            }
+            finalize_result(&app_handle, result, &config.target, session_id).await;
+            return;
+        }
+    }
+
+    // 最终回退：raw socket 完全不可用时走系统 ICMP 命令
+    log::warn!("All parallel implementations failed, falling back to system ICMP command");
     run_icmp_traceroute(app_handle, config, target_ip, stop_rx).await
 }
 
-/// TCP traceroute - uses tracetcp command on Windows
+/// TCP traceroute - 优先用并行 TCP；失败时用并行 ICMP（路径与 TCP SYN 通常一致）
 async fn run_tcp_traceroute(
     app_handle: tauri::AppHandle,
     config: TracerouteConfig,
@@ -245,7 +310,74 @@ async fn run_tcp_traceroute(
     let start_time = chrono::Utc::now().timestamp_millis();
     let probe_method = ProbeMethod::Tcp;
 
-    // Create session in database
+    // 解析目标端口
+    let (_target_host, target_port) = parse_target_with_port(&config.target);
+
+    // 优先尝试并行 TCP traceroute（仅 IPv4），失败时再试并行 ICMP
+    if let IpAddr::V4(ipv4) = target_ip {
+        log::info!("Trying parallel TCP traceroute to {}:{} ({})", config.target, target_port, ipv4);
+        let fast = crate::services::fast_tcp_traceroute::parallel_tcp_traceroute(
+            ipv4, target_port, config.max_hops, config.timeout_ms,
+        ).await;
+
+        let fast_hops = match fast {
+            Ok(hops) if hops.iter().any(|h| h.ip.is_some()) => Some(hops),
+            Ok(_) => {
+                log::warn!("Parallel TCP returned no hops, will try parallel ICMP fallback");
+                None
+            }
+            Err(e) => {
+                log::warn!("Parallel TCP failed ({}), will try parallel ICMP fallback", e);
+                None
+            }
+        };
+
+        let final_hops = if let Some(h) = fast_hops {
+            Some(h)
+        } else {
+            log::info!("Trying parallel ICMP fallback for TCP traceroute to {}", config.target);
+            match crate::services::fast_traceroute::parallel_icmp_traceroute(
+                ipv4, config.max_hops, config.timeout_ms,
+            ).await {
+                Ok(h) if h.iter().any(|x| x.ip.is_some()) => Some(h),
+                _ => None,
+            }
+        };
+
+        if let Some(fast_hops) = final_hops {
+            let session_id = crate::storage::database::create_ping_session(
+                &app_handle,
+                &config.target,
+                "traceroute",
+            ).await.unwrap_or(0);
+
+            let mut result = TracerouteResult {
+                target: config.target.clone(),
+                target_ip: target_ip.to_string(),
+                hops: Vec::new(),
+                completed: true,
+                start_time,
+                end_time: None,
+                probe_method,
+            };
+            for fh in fast_hops {
+                let hop = HopResult {
+                    hop_number: fh.hop_number,
+                    ip: fh.ip,
+                    hostname: None,
+                    latencies: vec![fh.rtt_ms],
+                    avg_latency: fh.rtt_ms,
+                    packet_loss: if fh.rtt_ms.is_some() { 0.0 } else { 100.0 },
+                };
+                process_hop(&app_handle, &config.target, hop, &mut result).await;
+            }
+            finalize_result(&app_handle, result, &config.target, session_id).await;
+            return;
+        }
+    }
+
+    // 最终回退：使用 tracetcp（Windows）/ traceroute -T（Unix）系统命令
+    log::warn!("All parallel implementations failed, falling back to system tracetcp");
     let session_id = crate::storage::database::create_ping_session(
         &app_handle,
         &config.target,
@@ -254,8 +386,8 @@ async fn run_tcp_traceroute(
 
     // Use tracetcp command on Windows for TCP traceroute
     let (command, args) = if cfg!(windows) {
-        let (target_host, target_port) = parse_target_with_port(&config.target);
-        let target_with_port = format!("{}:{}", target_host, target_port);
+        let (target_host, port) = parse_target_with_port(&config.target);
+        let target_with_port = format!("{}:{}", target_host, port);
 
         let args = vec![
             target_with_port,
@@ -268,7 +400,7 @@ async fn run_tcp_traceroute(
         ("tracetcp", args)
     } else {
         let base_args = vec![
-            "-I".to_string(),
+            "-T".to_string(),
             "-n".to_string(),
             "-m".to_string(), config.max_hops.to_string(),
             "-w".to_string(), format!("{}", config.timeout_ms / 1000),
@@ -277,7 +409,7 @@ async fn run_tcp_traceroute(
         ("traceroute", base_args)
     };
 
-    log::info!("TCP traceroute to {} with args: {:?}", config.target, args);
+    log::info!("TCP traceroute (system) to {} with args: {:?}", config.target, args);
 
     let mut result = TracerouteResult {
         target: config.target.clone(),

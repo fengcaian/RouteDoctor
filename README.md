@@ -1,4 +1,4 @@
-# PingPlotter Next
+# RouteDoctor
 
 > 开源网络监控桌面应用 - 提供持续路径监控、Ping 监控、带宽测试、DNS 查询等功能
 
@@ -62,7 +62,7 @@
 ## 项目结构
 
 ```
-PingPlotter-Next/
+RouteDoctor/
 ├── src/                          # 前端源码
 │   ├── views/                    # 页面视图
 │   │   ├── Dashboard.vue         # 仪表盘（实时状态概览）
@@ -133,6 +133,14 @@ npm install
 
 ### 开发模式
 
+推荐使用包含 Npcap SDK 自动准备的命令：
+
+```bash
+npm run tauri:dev      # 自动准备 Npcap SDK + 启动开发模式
+```
+
+或传统命令（如果你已经手动配好 SDK）：
+
 ```bash
 npm run tauri dev
 ```
@@ -140,10 +148,31 @@ npm run tauri dev
 ### 构建发布
 
 ```bash
-npm run tauri build
+npm run tauri:build    # 自动准备 Npcap SDK + 打包桌面应用
 ```
 
 构建产物位于 `src-tauri/target/release/bundle/`
+
+### Npcap 集成说明
+
+应用在 Windows 上集成 Npcap 以获取真实 UDP/TCP 路径追踪能力：
+
+- **最终用户**：只需要安装 [Npcap 驱动](https://npcap.com/#download)（运行时）。未装时应用自动回退到基础模式
+- **开发者**：构建期需要 Npcap SDK 中的 `wpcap.lib`。`npm run tauri:dev` / `tauri:build` 会自动调用 `scripts/setup-npcap-sdk.mjs` 下载到 `src-tauri/.npcap-sdk/`
+- **CI 构建机**：参考 `.github/workflows/build-windows.yml.example`
+- **macOS / Linux 构建**：脚本自动跳过，pcap crate 链接系统的 libpcap
+
+如果自动下载失败（网络受限），可以手动运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri/scripts/setup-npcap-sdk.ps1
+```
+
+或设置环境变量指向已有 SDK：
+
+```powershell
+$env:NPCAP_SDK_DIR = "C:\path\to\Npcap-SDK"
+```
 
 ### 可用命令
 
@@ -151,8 +180,11 @@ npm run tauri build
 |------|------|
 | `npm run dev` | 启动前端开发服务器 |
 | `npm run build` | 构建前端（vue-tsc + vite） |
-| `npm run tauri dev` | 启动完整开发环境 |
-| `npm run tauri build` | 构建桌面应用 |
+| `npm run tauri dev` | 启动完整开发环境（不预装 SDK） |
+| `npm run tauri build` | 构建桌面应用（不预装 SDK） |
+| `npm run tauri:dev` | 启动开发环境（自动准备 Npcap SDK） |
+| `npm run tauri:build` | 构建桌面应用（自动准备 Npcap SDK） |
+| `npm run setup:npcap-sdk` | 单独触发 Npcap SDK 下载 |
 
 ## 使用说明
 

@@ -202,7 +202,8 @@ pub async fn ping_once(target: &str, timeout_ms: u32, packet_size: u32) -> AppRe
                 });
             }
             Err(e) => {
-                log::warn!("Native ping failed, falling back to system ping: {}", e);
+                // 中间路由器 ping 经常失败(被丢弃/网络拒绝),用 debug 避免刷屏
+                log::debug!("Native ping failed, falling back to system ping: {}", e);
             }
         }
     }
@@ -328,7 +329,8 @@ async fn ping_loop(
             match crate::services::icmp_engine::ping_native(ip, icmp_seq, timeout, packet_size).await {
                 Ok(ms) => ms,
                 Err(e) => {
-                    log::warn!("Native ping failed seq={}, fallback to system ping: {}", seq, e);
+                    // traceroute 中间跳的 ping 失败是预期行为,降级为 debug
+                    log::debug!("Native ping failed seq={}, fallback to system ping: {}", seq, e);
                     fallback_ping_system(ip, timeout, packet_size).await
                 }
             }

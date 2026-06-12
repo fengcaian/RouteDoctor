@@ -162,7 +162,9 @@ function xToTime(x: number): number {
 function tick() {
   rafId = requestAnimationFrame(tick)
 
-  if (isLiveMode.value && store.isRunning) {
+  // 历史模式下任何情况都不要让 RAF 推进视口,否则会把刚对齐到数据范围的 viewStart/End
+  // 立刻覆盖到当前时间,导致用户看历史会话却看到"未来"
+  if (isLiveMode.value && store.isRunning && !store.isHistoricalView) {
     const now = Date.now()
     viewEndMs.value = now
     viewStartMs.value = now - windowMs.value
@@ -235,19 +237,38 @@ function computeTimeTickStep(): number {
   return candidates[candidates.length - 1]
 }
 
-/** 把时间戳格式化成轴标签（窗口短显示秒，长显示日期） */
+/** 判断两个时间戳是否在同一天（按本地时区） */
+function isSameDay(a: number, b: number): boolean {
+  const da = new Date(a)
+  const db = new Date(b)
+  return da.getFullYear() === db.getFullYear()
+    && da.getMonth() === db.getMonth()
+    && da.getDate() === db.getDate()
+}
+
+/** 判断时间戳是否是今天 */
+function isToday(ts: number): boolean {
+  return isSameDay(ts, Date.now())
+}
+
+/** 把时间戳格式化成轴标签（窗口短显示秒，长显示日期）。
+ * 当视图跨天或不在今天时，自动加上 MM-DD 前缀方便辨识历史数据日期。 */
 function formatTickLabel(ts: number, step: number): string {
   const d = new Date(ts)
   const pad = (n: number) => n.toString().padStart(2, '0')
+  // 窗口跨天 或 数据不是今天 → 在标签里加日期前缀
+  const needDate = !isSameDay(viewStartMs.value, viewEndMs.value) || !isToday(ts)
+  const datePrefix = needDate ? `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` : ''
+
   if (step >= 24 * 3600_000) {
-    // 跨天：MM-DD
+    // 跨天：纯日期 MM-DD
     return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
   } else if (step >= 3600_000) {
-    // 小时级：HH:00
-    return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+    // 小时级：[MM-DD ]HH:MM
+    return `${datePrefix}${pad(d.getHours())}:${pad(d.getMinutes())}`
   } else {
-    // 分钟/秒级：HH:MM:SS
-    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    // 分钟/秒级：[MM-DD ]HH:MM:SS
+    return `${datePrefix}${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
   }
 }
 
@@ -528,6 +549,10 @@ function onMouseLeave() {
 }
 
 function onWheel(e: WheelEvent) {
+  // 仅在按住 Ctrl/Cmd 时才缩放图表;否则放行,让外层容器正常滚动页面。
+  // 这与 Figma/Google Maps 的交互约定一致,避免用户想滚动页面时被图表"吃掉"滚轮事件。
+  if (!e.ctrlKey && !e.metaKey) return
+
   e.preventDefault()
   const delta = e.deltaY !== 0 ? e.deltaY : e.deltaX
   if (delta === 0) return
@@ -588,7 +613,11 @@ const tooltipData = computed(() => {
   if (!h) return { time: '', rows: [] as TooltipRow[] }
   const d = new Date(h.timestamp)
   const pad = (n: number) => n.toString().padStart(2, '0')
-  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  // 非今天的数据自动加日期前缀,方便查看历史会话时分辨日期
+  const datePrefix = isToday(h.timestamp)
+    ? ''
+    : `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
+  const time = `${datePrefix}${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
   const rows: TooltipRow[] = []
   for (const hopNumber of props.selectedHops) {
     const hop = store.hopHistories.get(hopNumber)
@@ -632,39 +661,59 @@ watch(totalSamplesSignal, () => {
   rebuildMeta()
 })
 
-// 选中跳变化时，回到实时模式
+// 选中跳变化时，回到实时模式（历史模式下保持视口对齐到数据范围，不切回实时）
 watch(
   () => props.selectedHops.join(','),
   () => {
-    isLiveMode.value = true
+    if (!store.isHistoricalView) {
+      isLiveMode.value = true
+    }
     hover.value = null
     rebuildMeta()
   }
 )
 
-// 历史会话加载时（loadHistoricalSession 改了 hopHistories），把视口对齐到会话末尾
+// 历史会话加载时（loadHistoricalSession 改了 hopHistories），把视口缩放到刚好
+// 覆盖整段会话数据，让用户一眼看到完整范围。
+//
+// 监听 [isHistoricalView, loadedSessionId] 组合:
+//   - 进入/退出历史模式 → isHistoricalView 变化触发
+//   - 历史模式下切换另一个历史会话 → isHistoricalView 始终 true,但 loadedSessionId 变化触发
+// 单独监听 isHistoricalView 会漏掉"历史→历史"的切换(同值不触发)。
+//
+// flush:'post' 确保在 DOM/响应式更新完成后再读 hopHistories,避免拿到中间状态。
 watch(
-  () => store.isHistoricalView,
-  (val) => {
-    if (val) {
-      // 找到所有样本的最晚时间点
+  () => [store.isHistoricalView, store.loadedSessionId] as const,
+  ([isHist]) => {
+    if (isHist) {
+      // 扫描所有跳的样本，找出全局最早 / 最晚时间点
+      let minTs = Infinity
       let maxTs = 0
       for (const hop of store.hopHistories.values()) {
-        if (hop.samples.length > 0) {
-          const lastTs = hop.samples[hop.samples.length - 1].timestamp
-          if (lastTs > maxTs) maxTs = lastTs
-        }
+        if (hop.samples.length === 0) continue
+        const first = hop.samples[0].timestamp
+        const last = hop.samples[hop.samples.length - 1].timestamp
+        if (first < minTs) minTs = first
+        if (last > maxTs) maxTs = last
       }
-      if (maxTs > 0) {
-        viewEndMs.value = maxTs
-        viewStartMs.value = maxTs - windowMs.value
+
+      if (maxTs > 0 && minTs < Infinity) {
+        // 两边各留 5% 余量，避免曲线贴边
+        const span = Math.max(MIN_WINDOW_MS, maxTs - minTs)
+        const padding = span * 0.05
+        windowMs.value = Math.min(MAX_WINDOW_MS, span + padding * 2)
+        viewStartMs.value = minTs - padding
+        viewEndMs.value = viewStartMs.value + windowMs.value
         isLiveMode.value = false
       }
     } else {
+      // 退出历史视图时回到默认窗口大小，恢复实时模式
+      windowMs.value = DEFAULT_WINDOW_MS
       isLiveMode.value = true
     }
     rebuildMeta()
-  }
+  },
+  { flush: 'post' }
 )
 
 // ========== 生命周期 ==========
@@ -675,9 +724,35 @@ onMounted(() => {
   refreshThemeColors()
 
   // 初始化视口
-  const now = Date.now()
-  viewEndMs.value = now
-  viewStartMs.value = now - windowMs.value
+  // 如果挂载时已经处于历史视图(组件可能因 v-if 重新挂载),不要把视口推到当前时间,
+  // 而是直接对齐到数据范围,避免画面闪一下"未来时间"再被 watcher 拨回。
+  if (store.isHistoricalView) {
+    let minTs = Infinity
+    let maxTs = 0
+    for (const hop of store.hopHistories.values()) {
+      if (hop.samples.length === 0) continue
+      const first = hop.samples[0].timestamp
+      const last = hop.samples[hop.samples.length - 1].timestamp
+      if (first < minTs) minTs = first
+      if (last > maxTs) maxTs = last
+    }
+    if (maxTs > 0 && minTs < Infinity) {
+      const span = Math.max(MIN_WINDOW_MS, maxTs - minTs)
+      const padding = span * 0.05
+      windowMs.value = Math.min(MAX_WINDOW_MS, span + padding * 2)
+      viewStartMs.value = minTs - padding
+      viewEndMs.value = viewStartMs.value + windowMs.value
+      isLiveMode.value = false
+    } else {
+      const now = Date.now()
+      viewEndMs.value = now
+      viewStartMs.value = now - windowMs.value
+    }
+  } else {
+    const now = Date.now()
+    viewEndMs.value = now
+    viewStartMs.value = now - windowMs.value
+  }
 
   if (wrapperRef.value && typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver(() => resizeCanvas())
@@ -750,6 +825,7 @@ onUnmounted(() => {
     <div
       ref="wrapperRef"
       class="canvas-wrapper"
+      :title="t('traceLatency.wheelHint')"
       @mousedown="onMouseDown"
       @mousemove="onMouseMove"
       @mouseup="onMouseUp"

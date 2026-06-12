@@ -45,7 +45,7 @@ export default {
     networkInfo: 'Network Info',
     networkInfoDesc: 'Local network configuration',
     gettingStarted: 'Getting Started',
-    welcome: 'Welcome to PingPlotter Next! This tool helps you monitor and diagnose network issues.',
+    welcome: 'Welcome to RouteDoctor! This tool helps you monitor and diagnose network issues.',
     tipPing: 'Continuously monitor latency and packet loss to any target.',
     tipTrace: 'Discover the network path and identify bottlenecks.',
     tipBandwidth: 'Measure your download and upload speeds.',
@@ -120,6 +120,25 @@ export default {
     probeMethod: 'Probe Method',
     pros: 'Pros:',
     cons: 'Cons:',
+    // Npcap-related hints
+    npcapTip: {
+      enhanced: '✓ Npcap enabled, real {protocol} path available',
+      basic: 'Falling back to ICMP. Install Npcap for real {protocol} path',
+      learnMore: 'Learn more',
+      dialogTitle: 'Install Npcap to unlock full {protocol} traceroute',
+      dialogIntro: 'Due to Windows system restrictions, this app cannot receive ICMP feedback triggered by UDP/TCP probes, so intermediate routers are currently probed via ICMP as fallback.',
+      dialogBenefit: 'With Npcap installed you unlock:',
+      benefit1: 'Intermediate routers probed with real {protocol}',
+      benefit2: 'Detect protocol path divergence (ECMP)',
+      benefit3: 'Diagnose "ICMP works but {protocol} blocked" firewall issues',
+      dialogTrust: 'Npcap is an open-source tool used by Wireshark, Nmap and other professional network tools.',
+      dialogSize: 'About 1MB, no reboot required.',
+      openDownload: 'Open Download Page',
+      remindLater: 'Remind Me Later',
+      keepBasic: 'Keep Using Basic Mode',
+      installed: 'Npcap installed (v{version})',
+      installedNoVersion: 'Npcap installed',
+    },
     // Graph and table
     local: 'Local',
     initializing: 'Initializing route trace...',
@@ -297,6 +316,7 @@ export default {
     empty: 'No data yet',
     emptyHint: 'Click an IP row in the table below to view its latency curve',
     tableTip: 'Click a row to switch hop · Ctrl+Click to compare multiple hops',
+    wheelHint: 'Hold Ctrl + scroll to zoom the chart',
   },
 
   // Path monitor - session history
@@ -324,7 +344,7 @@ export default {
     confirmReplace: 'A monitor is currently running. Loading history will stop it. Continue?',
     exitView: 'Exit View',
     viewBanner: 'Viewing historical session (read-only)',
-    loadLimit: 'Last {n} samples',
+    loadLimit: 'Loaded {hops} hops · {n} samples',
     loadFailed: 'Failed to load',
   },
 

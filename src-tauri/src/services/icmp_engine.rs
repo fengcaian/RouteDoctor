@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 use once_cell::sync::OnceCell;
 use surge_ping::{Client, Config, ICMP, PingIdentifier, PingSequence};
@@ -10,6 +11,24 @@ use crate::error::{AppError, AppResult};
 /// back to the system `ping` command.
 static CLIENT_V4: OnceCell<Option<Arc<Client>>> = OnceCell::new();
 static CLIENT_V6: OnceCell<Option<Arc<Client>>> = OnceCell::new();
+
+/// 全局唯一 identifier 计数器。surge-ping 通过 (identifier, sequence) 路由 ICMP 回复给
+/// 对应的 pinger,如果多个 pinger 同时使用相同 identifier+sequence 发包,就会触发
+/// "Multiple identical request" 错误。
+///
+/// PingPlotter 多目标场景下(多个持续 ping 任务 + 持续 traceroute 每跳的 ping)很容易
+/// 撞车,所以这里给每个 pinger 分配独立 identifier。16 位空间足够,溢出从 1 重新开始
+/// (0 留作"未分配"标记,避免与初始化值混淆)。
+static PING_ID_COUNTER: AtomicU16 = AtomicU16::new(1);
+
+fn next_ping_identifier() -> PingIdentifier {
+    let mut id = PING_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    if id == 0 {
+        // 跳过 0,从 1 重新开始
+        id = PING_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    }
+    PingIdentifier(id)
+}
 
 /// Initialise raw-socket ICMP clients. Safe to call multiple times; only the first
 /// call has any effect.
@@ -72,8 +91,9 @@ pub async fn ping_native(
     let client = client_for(ip)
         .ok_or_else(|| AppError::PingError("native ICMP client unavailable".into()))?;
 
-    // Identifier should be unique per pinger; use process id + seq for low collision risk.
-    let ident = PingIdentifier((std::process::id() & 0xFFFF) as u16);
+    // 每次发 ping 都分配一个唯一 identifier,避免 surge-ping 在多 pinger 并发时
+    // 因 (identifier, sequence) 撞车报 "Multiple identical request"。
+    let ident = next_ping_identifier();
     let mut pinger = client.pinger(ip, ident).await;
     pinger.timeout(Duration::from_millis(timeout_ms as u64));
 

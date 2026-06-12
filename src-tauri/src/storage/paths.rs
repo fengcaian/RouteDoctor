@@ -2,7 +2,7 @@
 //
 // 优先级：
 // 1. 如果 exe 同目录下存在 `portable.txt` 标记文件 → 使用 `<exe_dir>/data/`
-// 2. 否则使用系统 AppData 目录（Windows: %APPDATA%\com.pingplotter.next）
+// 2. 否则使用系统 AppData 目录（Windows: %APPDATA%\com.routedoctor.app）
 //
 // 这种设计兼顾两类用户：
 // - 装在 Program Files / 通过安装包安装的：数据走 AppData，符合操作系统规范

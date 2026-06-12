@@ -131,6 +131,47 @@ fn do_traceroute_blocking(
                 if let Some((reply_type, original_seq)) = parse_icmp_reply(data, identifier) {
                     let ttl = original_seq as u8;
                     if ttl == 0 || ttl as usize > results.len() { continue; }
+
+                    // 关键修正：并行 traceroute 中，所有 ttl ≥ 真目标跳的 echo
+                    // 都会到达目标，目标对每一个都回 Echo Reply。如果按 seq=ttl
+                    // 反查直接写入对应 hop，会把目标 IP 错填到第 N+1..max_hops 跳上
+                    // （表现为后段 IP 全部相同）。
+                    // 因此：来自目标的 Echo Reply（type=0 && src==target）只用来
+                    // 更新"最小目标跳"候选，绝不写到中间 hop；中间跳的 IP 只能来自
+                    // type=11 Time Exceeded（src 是中间路由器）。
+                    let from_target = reply_type == 0 && src_ip == target;
+                    if from_target {
+                        let new_target_ttl = match found_target_hop {
+                            Some(prev) => prev.min(ttl),
+                            None => ttl,
+                        };
+
+                        // 防御性清理：清掉所有 ttl > new_target_ttl 上误填的目标 IP
+                        for clear_ttl in (new_target_ttl + 1)..=max_hops {
+                            let cidx = (clear_ttl - 1) as usize;
+                            if cidx < results.len() {
+                                if let Some(ref ip) = results[cidx].ip {
+                                    if *ip == target.to_string() {
+                                        results[cidx].ip = None;
+                                        results[cidx].rtt_ms = None;
+                                    }
+                                }
+                            }
+                        }
+
+                        // 把目标跳那一行 IP 立即写为 target，让 all_done 判断生效
+                        let idx = (new_target_ttl - 1) as usize;
+                        if idx < results.len() {
+                            let send_time = send_times[new_target_ttl as usize];
+                            let rtt_ms = send_time.map(|t| t.elapsed().as_secs_f64() * 1000.0);
+                            results[idx].ip = Some(target.to_string());
+                            results[idx].rtt_ms = rtt_ms;
+                        }
+                        found_target_hop = Some(new_target_ttl);
+                        continue;
+                    }
+
+                    // 非目标回复（主要是 type=11 Time Exceeded）：正常填入对应 hop
                     let idx = (ttl - 1) as usize;
                     if results[idx].ip.is_some() { continue; } // 已有结果，跳过重复回复
 
@@ -139,11 +180,6 @@ fn do_traceroute_blocking(
 
                     results[idx].ip = Some(src_ip.to_string());
                     results[idx].rtt_ms = rtt_ms;
-
-                    // 如果是 Echo Reply（type=0）且来自目标 → 记录目标跳
-                    if reply_type == 0 && src_ip == target {
-                        found_target_hop = Some(ttl);
-                    }
                 }
             }
             Err(e) => {

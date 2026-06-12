@@ -324,8 +324,15 @@ async fn continuous_trace_task(
     cleanup_session(&target).await;
 }
 
-/// 发现路径：优先使用并行 ICMP raw socket（快），失败时回退到系统 traceroute 命令（兼容）。
+/// 发现路径：优先使用并行 raw socket 实现（快），失败时回退到系统命令（兼容）。
 /// 同时做反向 DNS + GeoIP。
+///
+/// 三级回退（按速度由快到慢）：
+/// 1. 对应 probe_method 的并行实现（fast_traceroute / fast_udp / fast_tcp）
+/// 2. 并行 ICMP（fast_traceroute）—— UDP/TCP 失败时的兜底，因为：
+///    - Windows 上 raw ICMP socket 收不到针对外发 UDP/TCP 包的 ICMP 错误回复（OS 限制）
+///    - 系统 tracert 在 Windows 上本身就是 ICMP，行为等价
+/// 3. 系统命令（tracert/tracetcp/traceroute）—— raw socket 完全不可用时的兜底
 async fn discover_path(
     app_handle: &tauri::AppHandle,
     target: &str,
@@ -333,54 +340,225 @@ async fn discover_path(
     timeout_ms: u32,
     probe_method: &str,
 ) -> Vec<(u32, String, Option<String>)> {
-    // 第一步：尝试并行 ICMP traceroute（仅 ICMP 模式可用）
-    // UDP/TCP 模式直接走系统命令，因为我们没实现 UDP/TCP 的并行版本
-    if probe_method == "icmp" {
-        // 解析目标到 IPv4
-        if let Ok(ipv4) = resolve_target_ipv4(target).await {
-            log::info!("Trying parallel ICMP traceroute to {} ({})", target, ipv4);
+    let t_total = std::time::Instant::now();
+
+    // 第一步：尝试并行 raw socket traceroute（按探测方式分派）。
+    let t_resolve = std::time::Instant::now();
+    let resolved_ipv4 = resolve_target_ipv4(target).await.ok();
+    if let Some(ipv4) = resolved_ipv4 {
+        log::info!("[discover_path:{}] DNS 解析 {} → {} 用时 {:?}",
+            probe_method, target, ipv4, t_resolve.elapsed());
+
+        let t_fast = std::time::Instant::now();
+        let fast_result: Option<Vec<crate::services::fast_traceroute::FastHop>> = match probe_method {
+            "icmp" => {
+                log::info!("Trying parallel ICMP traceroute to {} ({})", target, ipv4);
+                match crate::services::fast_traceroute::parallel_icmp_traceroute(ipv4, max_hops, timeout_ms).await {
+                    Ok(hops) => Some(hops),
+                    Err(e) => {
+                        log::warn!("Fast ICMP traceroute failed ({}), falling back to system command", e);
+                        None
+                    }
+                }
+            }
+            "udp" => {
+                log::info!("Trying parallel UDP traceroute to {} ({})", target, ipv4);
+
+                // 优先用 Npcap 真实路径（仅 Windows + 已安装）
+                #[cfg(windows)]
+                {
+                    if crate::services::npcap::detect::detect_npcap().installed {
+                        log::info!("[discover_path:udp] 使用 Npcap 真实 UDP traceroute");
+                        match crate::services::npcap::pcap_udp_traceroute::parallel_udp_traceroute(
+                            ipv4, max_hops, timeout_ms,
+                        ).await {
+                            Ok(hops) => {
+                                log::info!("[discover_path:udp] Npcap 路径完成");
+                                Some(hops)
+                            }
+                            Err(e) => {
+                                log::warn!("[discover_path:udp] Npcap 路径失败（{}），回退 fast UDP", e);
+                                run_fast_udp(ipv4, max_hops, timeout_ms).await
+                            }
+                        }
+                    } else {
+                        run_fast_udp(ipv4, max_hops, timeout_ms).await
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    run_fast_udp(ipv4, max_hops, timeout_ms).await
+                }
+            }
+            "tcp" => {
+                let (_host, port) = split_target_port(target, 443);
+                log::info!("Trying parallel TCP traceroute to {}:{} ({})", target, port, ipv4);
+
+                #[cfg(windows)]
+                {
+                    if crate::services::npcap::detect::detect_npcap().installed {
+                        log::info!("[discover_path:tcp] 使用 Npcap 真实 TCP traceroute");
+                        match crate::services::npcap::pcap_tcp_traceroute::parallel_tcp_traceroute(
+                            ipv4, port, max_hops, timeout_ms,
+                        ).await {
+                            Ok(hops) => {
+                                log::info!("[discover_path:tcp] Npcap 路径完成");
+                                Some(hops)
+                            }
+                            Err(e) => {
+                                log::warn!("[discover_path:tcp] Npcap 路径失败（{}），回退 fast TCP", e);
+                                run_fast_tcp(ipv4, port, max_hops, timeout_ms).await
+                            }
+                        }
+                    } else {
+                        run_fast_tcp(ipv4, port, max_hops, timeout_ms).await
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    run_fast_tcp(ipv4, port, max_hops, timeout_ms).await
+                }
+            }
+            _ => None,
+        };
+        log::info!("[discover_path:{}] 并行探测用时 {:?}", probe_method, t_fast.elapsed());
+
+        if let Some(fast_hops) = fast_result {
+            let mut hops: Vec<(u32, String, Option<String>)> = fast_hops
+                .into_iter()
+                .filter_map(|h| h.ip.map(|ip| (h.hop_number, ip, None)))
+                .collect();
+
+            // 判断 UDP/TCP fast 路径是否"实质成功"：
+            // Windows 上 raw ICMP socket 收不到 UDP/TCP 触发的 Time Exceeded（OS 限制），
+            // 此时 fast 路径只能识别到目标跳，hops.len() == 1 且就是目标 IP。
+            // 这种结果对用户毫无价值——必须回退到 ICMP 拿到完整路径。
+            //
+            // 规则：UDP/TCP 模式下，如果 hops 数量 < 2，或者中间跳全空（只有最后一跳是目标 IP），
+            // 则视为 fast 失败，让逻辑落到下方的 ICMP 兜底。
+            let fast_truly_useful = if probe_method == "icmp" {
+                !hops.is_empty()
+            } else {
+                // UDP/TCP：要求至少有一个非目标 IP 的跳，否则无意义
+                let target_ip_str = ipv4.to_string();
+                let has_intermediate = hops.iter().any(|(_, ip, _)| *ip != target_ip_str);
+                !hops.is_empty() && has_intermediate
+            };
+
+            if fast_truly_useful {
+                log::info!("Fast {} traceroute resolved {} hops with IPs", probe_method, hops.len());
+                let t_enrich = std::time::Instant::now();
+                enrich_hops_async(app_handle, target, &mut hops).await;
+                log::info!("[discover_path:{}] 反向 DNS + GeoIP 富化用时 {:?}",
+                    probe_method, t_enrich.elapsed());
+                log::info!("[discover_path:{}] 总耗时 {:?}", probe_method, t_total.elapsed());
+                return hops;
+            } else {
+                log::warn!(
+                    "Fast {} traceroute 仅识别到 {} 跳且无中间跳（疑似 Windows raw socket 限制），回退 ICMP",
+                    probe_method, hops.len()
+                );
+            }
+        }
+
+        // 第二步（仅 UDP/TCP）：并行 ICMP 兜底。
+        // 原因：Windows 上 raw ICMP socket 收不到 UDP/TCP 引发的 ICMP 错误回复，
+        // 但能收到 ICMP echo 引发的 Time Exceeded。系统 tracert 在 Windows 上本来
+        // 就用 ICMP，行为等价。这一兜底比走系统命令快一个数量级（~3s vs ~40s）。
+        if probe_method != "icmp" {
+            log::info!("[discover_path:{}] 改用并行 ICMP 作为兜底", probe_method);
+            let t_icmp_fallback = std::time::Instant::now();
             match crate::services::fast_traceroute::parallel_icmp_traceroute(ipv4, max_hops, timeout_ms).await {
                 Ok(fast_hops) => {
-                    // 组装与原格式一致的结构（hop_number, ip, hostname=None）
                     let mut hops: Vec<(u32, String, Option<String>)> = fast_hops
                         .into_iter()
                         .filter_map(|h| h.ip.map(|ip| (h.hop_number, ip, None)))
                         .collect();
-
+                    log::info!("[discover_path:{}] ICMP 兜底探测用时 {:?}（{} 跳）",
+                        probe_method, t_icmp_fallback.elapsed(), hops.len());
                     if !hops.is_empty() {
-                        log::info!("Fast traceroute resolved {} hops with IPs", hops.len());
-                        // 反向 DNS + GeoIP
+                        let t_enrich = std::time::Instant::now();
                         enrich_hops_async(app_handle, target, &mut hops).await;
+                        log::info!("[discover_path:{}] 富化用时 {:?}", probe_method, t_enrich.elapsed());
+                        log::info!("[discover_path:{}] 总耗时 {:?}（ICMP 兜底）",
+                            probe_method, t_total.elapsed());
                         return hops;
-                    } else {
-                        log::warn!("Fast traceroute returned no hops, falling back to system command");
                     }
                 }
                 Err(e) => {
-                    log::warn!("Fast traceroute failed ({}), falling back to system command", e);
+                    log::warn!("ICMP 兜底也失败（{}），回退到系统命令", e);
                 }
             }
-        } else {
-            log::warn!("Failed to resolve {} to IPv4, using system command", target);
         }
+    } else {
+        log::warn!("Failed to resolve {} to IPv4, using system command", target);
     }
 
-    // 回退到原有的"调系统 tracert/traceroute 命令"实现
-    discover_path_via_system_command(app_handle, target, max_hops, timeout_ms, probe_method).await
+    // 最终回退到系统命令
+    log::info!("[discover_path:{}] 回退到系统命令", probe_method);
+    let hops = discover_path_via_system_command(app_handle, target, max_hops, timeout_ms, probe_method).await;
+    log::info!("[discover_path:{}] 系统命令路径总耗时 {:?}", probe_method, t_total.elapsed());
+    hops
 }
 
-/// 把目标解析为 IPv4 地址
+/// 拆分 "host:port" 形式，返回 (host, port)。无端口时使用 default_port。
+fn split_target_port(target: &str, default_port: u16) -> (String, u16) {
+    if let Some(idx) = target.rfind(':') {
+        let after = &target[idx + 1..];
+        if let Ok(port) = after.parse::<u16>() {
+            return (target[..idx].to_string(), port);
+        }
+    }
+    (target.to_string(), default_port)
+}
+
+/// 包装 fast_udp_traceroute 的调用，统一错误日志
+async fn run_fast_udp(
+    ipv4: std::net::Ipv4Addr,
+    max_hops: u32,
+    timeout_ms: u32,
+) -> Option<Vec<crate::services::fast_traceroute::FastHop>> {
+    match crate::services::fast_udp_traceroute::parallel_udp_traceroute(ipv4, max_hops, timeout_ms).await {
+        Ok(hops) => Some(hops),
+        Err(e) => {
+            log::warn!("Fast UDP traceroute failed ({}), will try ICMP fast as fallback", e);
+            None
+        }
+    }
+}
+
+/// 包装 fast_tcp_traceroute 的调用，统一错误日志
+async fn run_fast_tcp(
+    ipv4: std::net::Ipv4Addr,
+    port: u16,
+    max_hops: u32,
+    timeout_ms: u32,
+) -> Option<Vec<crate::services::fast_traceroute::FastHop>> {
+    match crate::services::fast_tcp_traceroute::parallel_tcp_traceroute(ipv4, port, max_hops, timeout_ms).await {
+        Ok(hops) => Some(hops),
+        Err(e) => {
+            log::warn!("Fast TCP traceroute failed ({}), will try ICMP fast as fallback", e);
+            None
+        }
+    }
+}
+
+/// 把目标解析为 IPv4 地址。target 可以是 "host"、"host:port"、"ip"、"ip:port"。
 async fn resolve_target_ipv4(target: &str) -> AppResult<std::net::Ipv4Addr> {
     use std::net::ToSocketAddrs;
+
+    // 先剥掉可能存在的 ":port"，只保留 host 部分用于解析
+    let (host_only, _port) = split_target_port(target, 0);
+
     // 先试纯 IP 格式
-    if let Ok(ip) = target.parse::<std::net::Ipv4Addr>() {
+    if let Ok(ip) = host_only.parse::<std::net::Ipv4Addr>() {
         return Ok(ip);
     }
-    // 域名解析
-    let host = format!("{}:0", target);
+    // 域名解析（to_socket_addrs 需要 host:port 格式，端口随便填）
+    let lookup = format!("{}:0", host_only);
     let target_owned = target.to_string();
     let ipv4 = tokio::task::spawn_blocking(move || -> Option<std::net::Ipv4Addr> {
-        host.to_socket_addrs().ok()?
+        lookup.to_socket_addrs().ok()?
             .find_map(|addr| match addr.ip() {
                 std::net::IpAddr::V4(v4) => Some(v4),
                 _ => None,

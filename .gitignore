@@ -6,6 +6,7 @@ dist
 # === Tauri / Rust ===
 src-tauri/target
 src-tauri/target_old
+src-tauri/.npcap-sdk
 **/*.rs.bk
 Cargo.lock
 

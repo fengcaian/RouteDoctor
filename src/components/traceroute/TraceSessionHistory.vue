@@ -113,7 +113,10 @@ async function handleLoad(session: TraceSessionRow) {
     store.loadHistoricalSession(session, hops, samples)
     emit('loaded', session.id)
     close()
-    toast.info(t('traceHistory.loadLimit', { n: samples.length }))
+    // 提示样本数 = 所有跳的探测次数总和(不是时间点数,也不是节点数)
+    // 例如 30 跳里 26 个有响应,跑了 4 秒 ≈ 26×2 = 52 条样本(0.5Hz)
+    const validHopCount = hops.filter(h => h.ip).length
+    toast.info(t('traceHistory.loadLimit', { hops: validHopCount, n: samples.length }))
   } catch (e: any) {
     toast.error(`${t('traceHistory.loadFailed')}: ${typeof e === 'string' ? e : e.message ?? ''}`)
   } finally {

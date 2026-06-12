@@ -46,8 +46,8 @@ function goToHome() {
 <template>
   <aside class="sidebar" :class="{ collapsed }">
     <div class="sidebar-header" @click="goToHome" :title="t('nav.backHome')">
-      <h1 class="app-title">{{ collapsed ? 'PP' : 'PingPlotter' }}</h1>
-      <span v-if="!collapsed" class="app-version">Next</span>
+      <h1 class="app-title">{{ collapsed ? 'RD' : 'RouteDoctor' }}</h1>
+      <span v-if="!collapsed" class="app-version">v0.1.0</span>
     </div>
 
     <nav class="sidebar-nav">

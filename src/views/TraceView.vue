@@ -3,15 +3,18 @@ import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import TraceLatencyChart from '@/components/traceroute/TraceLatencyChart.vue'
 import TraceSessionHistory from '@/components/traceroute/TraceSessionHistory.vue'
+import NpcapGuideDialog from '@/components/common/NpcapGuideDialog.vue'
 import { useContinuousTrace, useContinuousTraceListener } from '@/composables/useContinuousTrace'
 import { useContinuousTraceStore } from '@/stores/continuousTraceStore'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useNpcapStore } from '@/stores'
 import { useToast } from '@/composables/useToast'
 import type { ContinuousTraceHopResult, PathDiscovered } from '@/composables/useContinuousTrace'
 
 const { t } = useI18n()
 const store = useContinuousTraceStore()
 const settingsStore = useSettingsStore()
+const npcapStore = useNpcapStore()
 const toast = useToast()
 const { startContinuousTrace, stopContinuousTrace } = useContinuousTrace()
 
@@ -51,6 +54,84 @@ watch(
     }
   }
 )
+
+// 加载历史会话后,把 probeMethod 显示同步成会话使用的方式(ICMP/UDP/TCP)
+// 否则永远显示初始值 'icmp',与会话实际探测方式不符
+watch(
+  () => store.loadedProbeMethod,
+  (val) => {
+    if (val === 'icmp' || val === 'udp' || val === 'tcp') {
+      probeMethod.value = val
+    }
+  }
+)
+
+// ============================================================================
+// Npcap 集成：UDP/TCP 探测方式按钮的状态提示与首次引导
+// ============================================================================
+
+// 引导对话框相关状态
+const npcapDialogVisible = ref(false)
+const npcapDialogProtocol = ref<'UDP' | 'TCP'>('UDP')
+
+/**
+ * 给指定协议返回 tooltip 文本
+ * - icmp：无提示（ICMP 不需要 Npcap）
+ * - udp/tcp：根据 Npcap 安装状态返回不同文案
+ */
+function probeMethodTooltip(method: 'icmp' | 'udp' | 'tcp'): string {
+  if (method === 'icmp') return ''
+  // 非 Windows 平台不显示 Npcap 提示
+  if (!npcapStore.status.supported_platform) return ''
+  const protocolUpper = method.toUpperCase()
+  if (npcapStore.status.installed) {
+    return t('traceroute.npcapTip.enhanced', { protocol: protocolUpper })
+  }
+  return t('traceroute.npcapTip.basic', { protocol: protocolUpper })
+}
+
+/**
+ * 给按钮加视觉状态指示
+ * - Npcap 已装：UDP/TCP 按钮显示绿色小点（增强模式）
+ * - Npcap 未装：UDP/TCP 按钮显示灰色提示点（基础模式，可点击下载）
+ */
+function probeMethodBadgeClass(method: 'icmp' | 'udp' | 'tcp'): string {
+  if (method === 'icmp') return ''
+  if (!npcapStore.status.supported_platform) return ''
+  return npcapStore.status.installed ? 'badge-enhanced' : 'badge-basic'
+}
+
+/**
+ * 切换探测方式时的钩子。
+ * UDP/TCP + Npcap 未装 + 用户从未看过引导 → 弹引导对话框（不强制）。
+ * 引导对话框不会阻止切换：用户切到 UDP/TCP 后照样能用（走 ICMP 兜底）。
+ */
+function handleProbeMethodChange(method: 'icmp' | 'udp' | 'tcp') {
+  probeMethod.value = method
+  if (method === 'icmp') return
+  if (!npcapStore.status.supported_platform) return
+  if (npcapStore.status.installed) return
+  if (npcapStore.guideShown) return
+  // 首次切到 UDP/TCP 且未装 Npcap → 弹一次引导
+  npcapDialogProtocol.value = method.toUpperCase() as 'UDP' | 'TCP'
+  npcapDialogVisible.value = true
+}
+
+/**
+ * 用户点击"了解详情"链接时主动打开对话框（不受 guideShown 限制）
+ */
+function openNpcapGuide(method: 'udp' | 'tcp') {
+  npcapDialogProtocol.value = method.toUpperCase() as 'UDP' | 'TCP'
+  npcapDialogVisible.value = true
+}
+
+function closeNpcapDialog() {
+  npcapDialogVisible.value = false
+}
+
+function acknowledgeNpcapDialog() {
+  npcapStore.markGuideShown()
+}
 
 /**
  * 切换跳的显示
@@ -242,16 +323,34 @@ function getLatencyClass(avg: number): string {
           />
         </div>
         <div class="config-field">
-          <label class="config-label">{{ t('traceroute.probeMethod') }}</label>
+          <label class="config-label">
+            {{ t('traceroute.probeMethod') }}
+            <a
+              v-if="
+                probeMethod !== 'icmp' &&
+                npcapStore.status.supported_platform &&
+                !npcapStore.status.installed
+              "
+              class="learn-more-link"
+              @click.prevent="openNpcapGuide(probeMethod)"
+            >
+              {{ t('traceroute.npcapTip.learnMore') }}
+            </a>
+          </label>
           <div class="probe-selector">
             <button
               v-for="method in ['icmp', 'udp', 'tcp'] as const"
               :key="method"
               :class="['probe-btn', { active: probeMethod === method }]"
               :disabled="inputsDisabled"
-              @click="probeMethod = method"
+              :title="probeMethodTooltip(method)"
+              @click="handleProbeMethodChange(method)"
             >
               {{ method.toUpperCase() }}
+              <span
+                v-if="probeMethodBadgeClass(method)"
+                :class="['probe-badge', probeMethodBadgeClass(method)]"
+              ></span>
             </button>
           </div>
         </div>
@@ -348,6 +447,14 @@ function getLatencyClass(avg: number): string {
 
     <!-- 历史会话抽屉 -->
     <TraceSessionHistory v-model:open="historyOpen" />
+
+    <!-- Npcap 引导对话框：UDP/TCP 探测方式首次切换且未装 Npcap 时弹出 -->
+    <NpcapGuideDialog
+      :visible="npcapDialogVisible"
+      :protocol="npcapDialogProtocol"
+      @close="closeNpcapDialog"
+      @acknowledged="acknowledgeNpcapDialog"
+    />
   </div>
 </template>
 
@@ -496,6 +603,7 @@ function getLatencyClass(avg: number): string {
 }
 
 .probe-btn {
+  position: relative;
   padding: 6px 12px;
   border: 1px solid var(--border-color);
   border-radius: 6px;
@@ -520,6 +628,41 @@ function getLatencyClass(avg: number): string {
   &:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+}
+
+// Npcap 状态徽章：UDP/TCP 按钮右上角的小圆点
+.probe-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  pointer-events: none;
+
+  &.badge-enhanced {
+    background: #10b981;        // 绿色 = Npcap 已装，完整模式
+    box-shadow: 0 0 4px rgba(16, 185, 129, 0.6);
+  }
+
+  &.badge-basic {
+    background: #f59e0b;        // 橙色 = Npcap 未装，基础模式
+  }
+}
+
+// "了解详情"链接：Npcap 未装时显示在标签右侧
+.learn-more-link {
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--accent-color);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+
+  &:hover {
+    filter: brightness(1.2);
   }
 }
 

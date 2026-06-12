@@ -36,7 +36,7 @@ onUnmounted(() => {
     </div>
 
     <div class="status-center">
-      <span class="app-name">PingPlotter Next v0.1.0</span>
+      <span class="app-name">RouteDoctor v0.1.0</span>
     </div>
 
     <div class="status-right">

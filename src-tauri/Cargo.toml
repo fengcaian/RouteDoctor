@@ -1,5 +1,5 @@
 [package]
-name = "pingplotter-next"
+name = "routedoctor"
 version = "0.1.0"
 description = "Network monitoring desktop application"
 authors = ["you"]
@@ -30,6 +30,18 @@ reqwest = { version = "0.12", features = ["stream", "json"] }
 futures-util = "0.3"
 anyhow = "1"
 thiserror = "1"
+
+# Npcap 检测：仅在 Windows 上需要，用 winreg 读注册表 + 文件系统检测 wpcap.dll
+# 暂不引入 pcap crate（需要 Npcap SDK 编译期链接，留待第二阶段引入）
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+# Npcap 集成：pcap crate 用于在 Windows 上绕过 OS 协议栈，直接通过 Npcap 驱动
+# 收发原始数据包，从而拿到由 UDP/TCP 探测包触发的 ICMP Time Exceeded 回复（Win 内核默认过滤）。
+# 编译期需要 Npcap SDK 提供的 wpcap.lib（运行 src-tauri/scripts/setup-npcap-sdk.ps1 自动下载）。
+# 运行时需要用户机器装了 Npcap 驱动；未装时本应用回退到现有 fast_traceroute 实现。
+pcap = "2"
+# 用于构造和解析 IP/UDP/TCP/ICMP 包结构（搭配 pcap 使用）
+pnet_packet = "0.35"
 
 [features]
 default = ["custom-protocol"]

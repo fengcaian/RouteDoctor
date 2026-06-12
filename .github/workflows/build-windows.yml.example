@@ -1,0 +1,62 @@
+# GitHub Actions 模板：Windows 上构建 RouteDoctor
+#
+# 使用方法：把文件改名为 build-windows.yml 即可启用。
+# 这个模板演示如何在 CI 上自动获取 Npcap SDK 并完成 Tauri 打包。
+
+name: Build (Windows)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # 这一步会自动下载 Npcap SDK 到 src-tauri/.npcap-sdk
+      # 也可以选择把 SDK 放在 cache 里加速
+      - name: Setup Npcap SDK
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri/scripts/setup-npcap-sdk.ps1
+
+      # 构建 Tauri 应用
+      # 注意：发布版二进制只需要用户机器上装了 Npcap 驱动，不需要 SDK
+      - name: Build Tauri app
+        run: npx tauri build
+
+      # 上传产物（NSIS 安装包 + MSI 安装包）
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: routedoctor-windows
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+
+# 注意事项：
+# 1. Npcap SDK 在 Windows runner 上每次都重新下载，约 365KB 几秒钟即可
+# 2. 如果担心 npcap.com 不稳定，可以把 SDK 提交到私有仓库或 release 资产里
+# 3. 跨平台构建时（mac/linux），scripts/setup-npcap-sdk.mjs 会自动跳过

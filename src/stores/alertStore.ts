@@ -221,10 +221,10 @@ export const useAlertStore = defineStore('alerts', () => {
     // 系统通知 (Tauri plugin -> browser fallback)
     if (rule.notify.system) {
       invoke('plugin:notification|notify', {
-        options: { title: 'PingPlotter Next 告警', body: message }
+        options: { title: 'RouteDoctor 告警', body: message }
       }).catch(() => {
         try {
-          new Notification('PingPlotter Next 告警', { body: message })
+          new Notification('RouteDoctor 告警', { body: message })
         } catch {
           if (!rule.notify.toast) toast.warning(message, 5000)
         }

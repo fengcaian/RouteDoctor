@@ -5,12 +5,13 @@ import AppSidebar from '@/components/common/AppSidebar.vue'
 import StatusBar from '@/components/common/StatusBar.vue'
 import ToastContainer from '@/components/common/ToastContainer.vue'
 import { stopAllPings } from '@/composables/usePing'
-import { usePingStore, useTracerouteStore, useBandwidthStore } from '@/stores'
+import { usePingStore, useTracerouteStore, useBandwidthStore, useNpcapStore } from '@/stores'
 import { useToast } from '@/composables/useToast'
 
 const pingStore = usePingStore()
 const tracerouteStore = useTracerouteStore()
 const bandwidthStore = useBandwidthStore()
+const npcapStore = useNpcapStore()
 const { info } = useToast()
 
 let unlistenFirstMinimize: (() => void) | null = null
@@ -29,6 +30,10 @@ onMounted(async () => {
   unlistenFirstMinimize = await listen<string>('first-minimize', (event) => {
     info(event.payload, 5000)
   })
+
+  // 启动时检测 Npcap 安装状态（轻量、不阻塞）
+  // 结果缓存到 npcapStore，UDP/TCP 探测方式按钮根据状态显示提示
+  npcapStore.refresh().catch((err) => console.warn('[npcap] 初始检测失败:', err))
 
   console.log('App initialized - all sessions cleared')
 })

@@ -562,6 +562,9 @@ function onMouseLeave() {
 }
 
 function onWheel(e: WheelEvent) {
+  // 仅在按住 Ctrl/Cmd 时才平移视图;否则放行,让外层容器正常滚动页面。
+  // 这与 Figma/Google Maps 的交互约定一致,避免用户想滚动页面时被图表"吃掉"滚轮事件。
+  if (!e.ctrlKey && !e.metaKey) return
   if (samples.length === 0) return
   // 滚轮平移视图
   const delta = e.deltaY !== 0 ? e.deltaY : e.deltaX
@@ -728,6 +731,7 @@ onUnmounted(() => {
     <div
       ref="wrapperRef"
       class="canvas-wrapper"
+      :title="t('traceLatency.wheelHint')"
       @mousedown="onMouseDown"
       @mousemove="onMouseMove"
       @mouseup="onMouseUp"

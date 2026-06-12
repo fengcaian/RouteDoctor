@@ -1,4 +1,4 @@
-wing: pingplotter_next
+wing: routedoctor
 rooms:
 - name: public
   description: Files from public/

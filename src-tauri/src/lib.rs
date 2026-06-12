@@ -174,6 +174,7 @@ pub fn run() {
             commands::network::get_public_ip_info,
             commands::network::geoip_lookup,
             commands::network::geoip_lookup_batch,
+            commands::network::get_npcap_status,
             commands::settings::set_minimize_to_tray,
             commands::settings::is_autostart_enabled,
             commands::settings::set_autostart,
