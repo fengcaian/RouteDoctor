@@ -3,6 +3,25 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::net::IpAddr;
 
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// Windows 下静默运行一段 PowerShell 脚本，返回原始 stdout 字节。
+///
+/// 关键点：
+/// - `creation_flags(CREATE_NO_WINDOW)` 不再让 powershell.exe 弹出控制台窗口
+///   （否则界面上每次调用都会闪一下蓝色窗口）
+/// - `-NoProfile` 跳过用户 PROFILE 脚本，启动从 ~700ms 降到 ~300ms
+/// - `-NonInteractive` 防止脚本内的 Read-Host 等阻塞调用挂起进程
+#[cfg(target_os = "windows")]
+async fn run_powershell_silent(script: &str) -> Option<Vec<u8>> {
+    let mut cmd = tokio::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.output().await.ok().map(|o| o.stdout)
+}
+
 /// DNS 查询结果
 #[derive(Debug, Serialize)]
 pub struct DnsRecord {
@@ -236,14 +255,14 @@ pub async fn get_network_info() -> AppResult<NetworkInfo> {
     // 获取本机 IP
     let local_ip = crate::utils::network::get_local_ip().map(|ip| ip.to_string());
 
-    // 获取网络接口信息（通过系统命令）
-    let interfaces = get_interfaces().await;
-
-    // 获取默认网关
-    let default_gateway = get_default_gateway().await;
-
-    // 获取 DNS 服务器
-    let dns_servers = get_dns_servers().await;
+    // 并发拉取接口、网关、DNS。原本三个 await 串行 + 每次都 spawn 一个 powershell.exe
+    // 会让用户看到三次 powershell 控制台窗口闪烁；改成并发后整体耗时也从
+    // ~3 × 启动开销 降到 max(三者)。
+    let (interfaces, default_gateway, dns_servers) = tokio::join!(
+        get_interfaces(),
+        get_default_gateway(),
+        get_dns_servers(),
+    );
 
     Ok(NetworkInfo {
         local_ip,
@@ -260,12 +279,10 @@ async fn get_interfaces() -> Vec<NetworkInterface> {
 
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = tokio::process::Command::new("powershell")
-            .args(["-Command", "Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, IPAddress, AddressFamily | ConvertTo-Json"])
-            .output()
-            .await
-        {
-            if let Ok(text) = String::from_utf8(output.stdout) {
+        if let Some(stdout) = run_powershell_silent(
+            "Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, IPAddress, AddressFamily | ConvertTo-Json",
+        ).await {
+            if let Ok(text) = String::from_utf8(stdout) {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                     let items = if json.is_array() {
                         json.as_array().unwrap().clone()
@@ -326,12 +343,10 @@ async fn get_interfaces() -> Vec<NetworkInterface> {
 async fn get_default_gateway() -> Option<String> {
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = tokio::process::Command::new("powershell")
-            .args(["-Command", "Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1 -ExpandProperty NextHop"])
-            .output()
-            .await
-        {
-            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if let Some(stdout) = run_powershell_silent(
+            "Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Select-Object -First 1 -ExpandProperty NextHop",
+        ).await {
+            let text = String::from_utf8_lossy(&stdout).trim().to_string();
             if !text.is_empty() {
                 return Some(text);
             }
@@ -364,12 +379,10 @@ async fn get_dns_servers() -> Vec<String> {
 
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = tokio::process::Command::new("powershell")
-            .args(["-Command", "Get-DnsClientServerAddress -AddressFamily IPv4 | Select-Object -ExpandProperty ServerAddresses | Select-Object -Unique"])
-            .output()
-            .await
-        {
-            let text = String::from_utf8_lossy(&output.stdout);
+        if let Some(stdout) = run_powershell_silent(
+            "Get-DnsClientServerAddress -AddressFamily IPv4 | Select-Object -ExpandProperty ServerAddresses | Select-Object -Unique",
+        ).await {
+            let text = String::from_utf8_lossy(&stdout);
             for line in text.lines() {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {

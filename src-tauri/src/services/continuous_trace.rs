@@ -429,21 +429,21 @@ async fn discover_path(
                 .filter_map(|h| h.ip.map(|ip| (h.hop_number, ip, None)))
                 .collect();
 
-            // 判断 UDP/TCP fast 路径是否"实质成功"：
-            // Windows 上 raw ICMP socket 收不到 UDP/TCP 触发的 Time Exceeded（OS 限制），
-            // 此时 fast 路径只能识别到目标跳，hops.len() == 1 且就是目标 IP。
-            // 这种结果对用户毫无价值——必须回退到 ICMP 拿到完整路径。
+            // 判断 fast 路径是否"实质成功"。
+            // 三种模式都要求"至少有一个非目标 IP 的中间跳"，否则视为失败。
             //
-            // 规则：UDP/TCP 模式下，如果 hops 数量 < 2，或者中间跳全空（只有最后一跳是目标 IP），
-            // 则视为 fast 失败，让逻辑落到下方的 ICMP 兜底。
-            let fast_truly_useful = if probe_method == "icmp" {
-                !hops.is_empty()
-            } else {
-                // UDP/TCP：要求至少有一个非目标 IP 的跳，否则无意义
-                let target_ip_str = ipv4.to_string();
-                let has_intermediate = hops.iter().any(|(_, ip, _)| *ip != target_ip_str);
-                !hops.is_empty() && has_intermediate
-            };
+            // ICMP 的失败模式：
+            //   - Linux/macOS raw socket 通常正常；只有目标跳意味着所有中间跳超时
+            //     （网络问题），这种情况算"无意义结果"，让系统命令兜底再尝试一次。
+            //   - Windows 上 raw socket 不会被走到（已经在 fast_traceroute 里转发到
+            //     IcmpSendEcho2 实现）。如果 IcmpSendEcho2 也只拿到目标跳，说明
+            //     iphlpapi 不可用或防火墙阻断，回退到 tracert.exe。
+            //
+            // UDP/TCP 的失败模式：Windows 内核不投递 UDP/TCP 触发的 Time Exceeded
+            //   到 raw socket，所以基本永远只有目标跳，必须回退。
+            let target_ip_str = ipv4.to_string();
+            let has_intermediate = hops.iter().any(|(_, ip, _)| *ip != target_ip_str);
+            let fast_truly_useful = !hops.is_empty() && has_intermediate;
 
             if fast_truly_useful {
                 log::info!("Fast {} traceroute resolved {} hops with IPs", probe_method, hops.len());
@@ -476,13 +476,22 @@ async fn discover_path(
                         .collect();
                     log::info!("[discover_path:{}] ICMP 兜底探测用时 {:?}（{} 跳）",
                         probe_method, t_icmp_fallback.elapsed(), hops.len());
-                    if !hops.is_empty() {
+
+                    // 同样要求至少有一个中间跳，否则继续回退到系统命令
+                    let target_ip_str = ipv4.to_string();
+                    let has_intermediate = hops.iter().any(|(_, ip, _)| *ip != target_ip_str);
+                    if !hops.is_empty() && has_intermediate {
                         let t_enrich = std::time::Instant::now();
                         enrich_hops_async(app_handle, target, &mut hops).await;
                         log::info!("[discover_path:{}] 富化用时 {:?}", probe_method, t_enrich.elapsed());
                         log::info!("[discover_path:{}] 总耗时 {:?}（ICMP 兜底）",
                             probe_method, t_total.elapsed());
                         return hops;
+                    } else {
+                        log::warn!(
+                            "[discover_path:{}] ICMP 兜底也只拿到 {} 跳且无中间跳，继续回退到系统命令",
+                            probe_method, hops.len()
+                        );
                     }
                 }
                 Err(e) => {

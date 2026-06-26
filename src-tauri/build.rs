@@ -14,6 +14,21 @@ fn main() {
     {
         ensure_npcap_sdk_available();
         println!("cargo:rerun-if-env-changed=NPCAP_SDK_DIR");
+
+        // 关键：把 wpcap.dll 设为延迟加载（Delay-Load）。
+        //
+        // 默认情况下 pcap crate 通过 wpcap.lib 在 EXE 的 PE 导入表里写入对
+        // wpcap.dll 的静态依赖，导致用户机器上没有 Npcap 时，Windows 加载器
+        // 在 EXE 启动前就报"找不到 wpcap.dll"，根本进不到代码里的检测逻辑。
+        //
+        // 加上 /DELAYLOAD 后，wpcap.dll 只在第一次调用 pcap 函数时才 LoadLibrary。
+        // 配合 services::npcap::detect::detect_npcap() 的运行时检测守护，
+        // 没装 Npcap 的用户也能正常启动 App，只是 UDP/TCP traceroute 走兜底实现。
+        //
+        // 同时连 delayimp.lib：MSVC link.exe 需要它提供 __delayLoadHelper2；
+        // rust-lld 自带实现，加上也不会冲突，便于切换链接器。
+        println!("cargo:rustc-link-arg=/DELAYLOAD:wpcap.dll");
+        println!("cargo:rustc-link-lib=delayimp");
     }
 
     tauri_build::build()

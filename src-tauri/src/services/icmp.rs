@@ -218,13 +218,20 @@ async fn ping_once_system(
     timeout_ms: u32,
     packet_size: u32,
 ) -> AppResult<PingResult> {
-    let output = tokio::process::Command::new("ping")
-        .args([
-            "-n", "1",
-            "-w", &timeout_ms.to_string(),
-            "-l", &packet_size.to_string(),
-            &ip.to_string()
-        ])
+    let mut cmd = tokio::process::Command::new("ping");
+    cmd.args([
+        "-n", "1",
+        "-w", &timeout_ms.to_string(),
+        "-l", &packet_size.to_string(),
+        &ip.to_string(),
+    ]);
+    // Windows 上 GUI 进程 spawn console 子进程会弹出黑色控制台窗口，
+    // 加 CREATE_NO_WINDOW 让它静默
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
         .output()
         .await
         .map_err(|e| AppError::PingError(e.to_string()))?;
@@ -404,15 +411,19 @@ async fn ping_loop(
 
 /// Fallback to system `ping` for a single packet. Returns latency in ms or None on timeout/error.
 async fn fallback_ping_system(ip: IpAddr, timeout_ms: u32, packet_size: u32) -> Option<f64> {
-    let output = tokio::process::Command::new("ping")
-        .args([
-            "-n", "1",
-            "-l", &packet_size.to_string(),
-            "-w", &timeout_ms.to_string(),
-            &ip.to_string(),
-        ])
-        .output()
-        .await;
+    let mut cmd = tokio::process::Command::new("ping");
+    cmd.args([
+        "-n", "1",
+        "-l", &packet_size.to_string(),
+        "-w", &timeout_ms.to_string(),
+        &ip.to_string(),
+    ]);
+    // Windows 上 GUI 进程 spawn console 子进程会弹出黑色控制台窗口
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let output = cmd.output().await;
 
     match output {
         Ok(out) => {

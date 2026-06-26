@@ -7,15 +7,27 @@
 // 为什么不用 surge-ping：surge-ping 0.8 不暴露 TTL 设置和 TimeExceeded 处理。
 // 为什么不用系统 tracert.exe：串行探测，30 跳里有几个超时跳就会拖到 20-60 秒。
 //
-// 限制：raw ICMP socket 在 Windows 需要 SeImpersonate 权限或管理员权限。
-// 大多数情况下普通用户能用（Tauri 应用通常可以创建 IPv4 raw socket）。
+// 平台限制：
+// - Linux/macOS：raw ICMP socket 工作正常（部分发行版需要 cap_net_raw 或 root）。
+// - Windows：用户态 raw socket 即使管理员也收不到中间跳的 Time Exceeded
+//   （Windows 内核投递限制），所以本文件 Windows 分支转发到
+//   `services::win_icmp_traceroute`，那里走 IcmpSendEcho2 API。
 // 失败时回退由调用方处理。
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::Ipv4Addr;
+
+#[cfg(not(windows))]
+use std::net::{IpAddr, SocketAddr, SocketAddrV4};
+#[cfg(not(windows))]
 use std::time::{Duration, Instant};
+#[cfg(not(windows))]
 use socket2::{Domain, Protocol, Socket, Type};
+#[cfg(not(windows))]
 use tokio::sync::mpsc;
-use crate::error::{AppError, AppResult};
+
+use crate::error::AppResult;
+#[cfg(not(windows))]
+use crate::error::AppError;
 
 /// 单跳探测结果
 #[derive(Debug, Clone)]
@@ -27,7 +39,33 @@ pub struct FastHop {
 
 /// 并行 ICMP traceroute。target 必须是已解析的 IPv4 地址。
 /// 整体耗时 = max(网络最大 RTT, timeout_ms)
+///
+/// 平台分发：
+/// - Windows: 走 `IcmpSendEcho2`（iphlpapi.dll），内核 ICMP 引擎处理 TTL +
+///   Time Exceeded，能拿到完整中间跳，无需管理员，也无需 Npcap。
+/// - Linux/macOS: 走 raw ICMP socket 自己解析 ICMP 回包。
 pub async fn parallel_icmp_traceroute(
+    target: Ipv4Addr,
+    max_hops: u32,
+    timeout_ms: u32,
+) -> AppResult<Vec<FastHop>> {
+    #[cfg(windows)]
+    {
+        return crate::services::win_icmp_traceroute::parallel_icmp_traceroute(
+            target, max_hops, timeout_ms,
+        )
+        .await;
+    }
+    #[cfg(not(windows))]
+    {
+        parallel_icmp_traceroute_rawsocket(target, max_hops, timeout_ms).await
+    }
+}
+
+/// raw socket 版的 ICMP traceroute（Linux/macOS 上使用）。
+/// Windows 上理论上可以建 raw socket，但内核不会可靠投递 Time Exceeded，所以不走这条。
+#[cfg(not(windows))]
+async fn parallel_icmp_traceroute_rawsocket(
     target: Ipv4Addr,
     max_hops: u32,
     timeout_ms: u32,
@@ -66,6 +104,7 @@ pub async fn parallel_icmp_traceroute(
     Ok(result)
 }
 
+#[cfg(not(windows))]
 fn do_traceroute_blocking(
     socket: Socket,
     target: Ipv4Addr,
@@ -203,6 +242,7 @@ fn do_traceroute_blocking(
 /// 构造一个最小的 ICMP echo request 包
 /// 格式：
 ///   type(1) | code(1) | checksum(2) | identifier(2) | sequence(2) | payload
+#[cfg(not(windows))]
 fn build_icmp_echo_request(identifier: u16, sequence: u16) -> Vec<u8> {
     let mut pkt = vec![0u8; 16];
     pkt[0] = 8;           // type = 8 (Echo Request)
@@ -220,6 +260,7 @@ fn build_icmp_echo_request(identifier: u16, sequence: u16) -> Vec<u8> {
     pkt
 }
 
+#[cfg(not(windows))]
 fn icmp_checksum(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
     let mut i = 0;
@@ -243,6 +284,7 @@ fn icmp_checksum(data: &[u8]) -> u16 {
 /// - Echo Reply (type=0)：ICMP header 直接带 identifier + sequence
 /// - Time Exceeded (type=11)：ICMP header 后面带 8 bytes 未使用 + 原始 IP header(20) + 原始 ICMP header(8)
 ///   原始 ICMP header 里有我们发的 identifier 和 sequence
+#[cfg(not(windows))]
 fn parse_icmp_reply(data: &[u8], expected_id: u16) -> Option<(u8, u16)> {
     if data.len() < 28 { return None; }
     // IPv4 header 长度
@@ -278,6 +320,7 @@ fn parse_icmp_reply(data: &[u8], expected_id: u16) -> Option<(u8, u16)> {
 }
 
 // 让 compiler 不抱怨未使用的 mpsc（保留以备未来流式版本）
+#[cfg(not(windows))]
 #[allow(dead_code)]
 fn _unused_mpsc<T>() -> mpsc::Sender<T> {
     let (tx, _) = mpsc::channel(1);
