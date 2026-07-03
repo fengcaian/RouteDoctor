@@ -24,6 +24,8 @@ pub struct PersistSample {
     pub session_id: i64,
     pub hop_number: u32,
     pub seq: u32,
+    /// 该轮该跳响应的 IP；超时或未探测到时为 None
+    pub ip: Option<String>,
     pub latency_ms: Option<f64>,
     pub is_timeout: bool,
     pub timestamp: i64,
@@ -160,8 +162,8 @@ async fn flush_buffer(
     {
         let mut stmt = tx.prepare_cached(
             "INSERT INTO trace_hop_sample
-             (session_id, hop_number, seq, latency_ms, is_timeout, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+             (session_id, hop_number, seq, latency_ms, is_timeout, timestamp, ip)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
         )?;
         for s in buffer.iter() {
             stmt.execute(params![
@@ -171,6 +173,7 @@ async fn flush_buffer(
                 s.latency_ms,
                 s.is_timeout as i32,
                 s.timestamp,
+                s.ip,
             ])?;
         }
     }
@@ -220,6 +223,8 @@ pub struct TraceHopInfoRow {
 pub struct TraceSampleRow {
     pub hop_number: u32,
     pub seq: u32,
+    /// 该样本对应的 IP；老库迁移前的样本或超时样本为 None
+    pub ip: Option<String>,
     pub latency_ms: Option<f64>,
     pub is_timeout: bool,
     pub timestamp: i64,
@@ -289,7 +294,7 @@ pub async fn load_samples(
 
     let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::ToSql>>) = if let Some(s) = since {
         (
-            "SELECT hop_number, seq, latency_ms, is_timeout, timestamp
+            "SELECT hop_number, seq, ip, latency_ms, is_timeout, timestamp
              FROM trace_hop_sample
              WHERE session_id = ?1 AND timestamp >= ?2
              ORDER BY timestamp ASC LIMIT ?3",
@@ -298,8 +303,8 @@ pub async fn load_samples(
     } else {
         (
             // 没有 since 时取末尾 N 条（适合"加载最近 X 个样本"）
-            "SELECT hop_number, seq, latency_ms, is_timeout, timestamp FROM (
-                SELECT hop_number, seq, latency_ms, is_timeout, timestamp
+            "SELECT hop_number, seq, ip, latency_ms, is_timeout, timestamp FROM (
+                SELECT hop_number, seq, ip, latency_ms, is_timeout, timestamp
                 FROM trace_hop_sample
                 WHERE session_id = ?1
                 ORDER BY timestamp DESC LIMIT ?2
@@ -314,9 +319,10 @@ pub async fn load_samples(
         Ok(TraceSampleRow {
             hop_number: row.get(0)?,
             seq: row.get(1)?,
-            latency_ms: row.get(2)?,
-            is_timeout: row.get(3)?,
-            timestamp: row.get(4)?,
+            ip: row.get(2)?,
+            latency_ms: row.get(3)?,
+            is_timeout: row.get(4)?,
+            timestamp: row.get(5)?,
         })
     })?;
     let mut out = Vec::new();

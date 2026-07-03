@@ -130,7 +130,7 @@ fn do_pcap_tcp_traceroute(
         }
 
         tcp_sockets.push((ttl, sock));
-        std::thread::sleep(Duration::from_millis(2));
+        // 见 fast_traceroute.rs 里同样注释：sleep 会导致首跳 RTT 虚高，去掉。
     }
 
     // 抓包循环 + 轮询 TCP socket 状态

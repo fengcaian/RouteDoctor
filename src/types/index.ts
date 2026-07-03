@@ -147,7 +147,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultPingInterval: 1000,
   defaultPingTimeout: 3000,
   defaultTracerouteMaxHops: 30,
-  minimizeToTray: true,
+  // 默认关闭窗口时直接退出应用；用户可在设置中开启"最小化到托盘"
+  minimizeToTray: false,
   autostart: false,
   traceWindowMinutes: 60,
   tracePersistEnabled: true

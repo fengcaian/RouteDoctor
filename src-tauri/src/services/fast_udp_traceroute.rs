@@ -1,23 +1,25 @@
-// 并行 UDP traceroute（PingPlotter / mtr 风格）
+// 并行 UDP traceroute（PingPlotter / mtr 风格 + 独立 recv 线程）
 //
 // 原理：
 // - 为 TTL=1..max_hops 各开一个 UDP socket，设置 IP_TTL=ttl，向目标的端口
 //   33434+ttl 发送一个最小数据包（标准 traceroute 使用的端口范围）。
 // - 中间路由器返回 ICMP Time Exceeded(type=11)；目标主机不监听这些端口，
 //   返回 ICMP Destination Unreachable(type=3, code=3, Port Unreachable)。
-// - 我们用一个 raw ICMP socket 在 timeout 窗口内统一接收所有 ICMP 回复，
-//   通过解析 ICMP 包内嵌的"原始 IP+UDP 头"提取 dst_port，反查 ttl =
-//   dst_port - 33434。
-// - 整体耗时 ≈ 1 个 timeout 窗口（与并行 ICMP 同级）。
+// - 用一个 raw ICMP socket 统一接收所有 ICMP 回复，通过解析 ICMP 包内嵌的
+//   "原始 IP+UDP 头"提取 dst_port，反查 ttl = dst_port - 33434。
 //
-// 优点：
-// - 不依赖系统 tracert/traceroute 串行命令，30 跳里有几个超时跳也只等一次。
-// - UDP 比 ICMP 在某些 ISP 路径上回复更稳定（不会被 ICMP 速率限制误伤）。
-//
-// 限制：
-// - 接收 ICMP 仍需要 raw socket 权限（Windows 通常 Tauri 应用可用，失败时回退）。
+// 关键：send 和 recv 分离
+// - 独立线程一开始就在 recv_from 上等 ICMP，收到立即用 Instant::now() 打
+//   时间戳并通过 mpsc 发给主线程 → 首跳 RTT 不再被 send 阶段的耗时污染。
+// - Windows 上"每 TTL 一个新 UdpSocket bind"耗时约 1200ms，如果同步阻塞
+//   直到发完再收，首跳 RTT 会虚高 ~1200ms（bug 现场）。
+// - 主线程负责发 30 个 UDP 包 + 从 channel 收响应事件 + 更新状态。
+// - 保留了每 TTL 独立 src_port 的语义（能看到 UDP ECMP 分岔的多 IP 现象）。
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use socket2::{Domain, Protocol, Socket, Type};
 use crate::error::{AppError, AppResult};
@@ -26,6 +28,15 @@ use crate::services::fast_traceroute::FastHop;
 /// 标准 traceroute 起始端口，与 Linux/BSD 的 traceroute 默认一致。
 /// 我们用 BASE+ttl 来反查响应对应的 TTL。
 const BASE_PORT: u16 = 33434;
+
+/// 一条 ICMP 响应事件：由 recv 线程实时打时间戳，通过 mpsc 发给主线程处理
+struct RecvEvent {
+    recv_time: Instant,
+    src_ip: Ipv4Addr,
+    ttl: u8,
+    #[allow(dead_code)]
+    icmp_type: u8,
+}
 
 /// 并行 UDP traceroute。target 必须是已解析的 IPv4 地址。
 /// 整体耗时 = max(网络最大 RTT, timeout_ms)
@@ -44,8 +55,6 @@ pub async fn parallel_udp_traceroute(
 
     // 显式 bind 到 0.0.0.0:0：Windows 上 raw socket 在 recv_from 前必须先 bind
     // （否则会立刻返回 WSAEINVAL=10022，让 read_timeout 失效从而 spin）。
-    // 在 fast_traceroute.rs(ICMP) 里 send_to 会触发隐式 bind，所以那里没暴露这个问题；
-    // 这里 raw ICMP socket 只用于 recv，必须显式 bind。
     let bind_addr: SocketAddr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0).into();
     if let Err(e) = icmp_socket.bind(&bind_addr.into()) {
         return Err(AppError::TracerouteError(format!(
@@ -73,9 +82,60 @@ fn do_udp_traceroute_blocking(
     max_hops: u8,
     timeout_ms: u32,
 ) -> AppResult<Vec<FastHop>> {
-    // 每跳的发送时间，用于计算 RTT；索引 0 不用
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let stop_flag_recv = stop_flag.clone();
+    let (tx, rx) = mpsc::channel::<RecvEvent>();
+
+    // ===== 独立 recv 线程 =====
+    // 一开始就在 icmp_socket.recv_from 上等 ICMP。收到即用 Instant::now() 打时间戳,
+    // 走过滤 + 反查 TTL 后通过 mpsc 发给主线程。
+    // 目的：send 阶段的耗时（Windows 上每 TTL 独立 UdpSocket bind 约 1000ms）
+    //      不再污染 RTT 计算——recv_time 是包真正到达的时刻。
+    let recv_thread = std::thread::spawn(move || {
+        let mut buf = [std::mem::MaybeUninit::new(0u8); 1500];
+        while !stop_flag_recv.load(Ordering::Relaxed) {
+            match icmp_socket.recv_from(&mut buf) {
+                Ok((len, src)) => {
+                    let recv_time = Instant::now();
+                    let data = unsafe {
+                        std::slice::from_raw_parts(buf.as_ptr() as *const u8, len)
+                    };
+                    let src_addr: SocketAddr = match src.as_socket() {
+                        Some(a) => a,
+                        None => continue,
+                    };
+                    let src_ip = match src_addr.ip() {
+                        IpAddr::V4(v4) => v4,
+                        _ => continue,
+                    };
+                    if let Some((icmp_type, ttl)) = parse_icmp_for_udp(data, target) {
+                        // 主线程 rx 已关闭 → 我们也退出
+                        if tx.send(RecvEvent {
+                            recv_time,
+                            src_ip,
+                            ttl,
+                            icmp_type,
+                        }).is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    // WouldBlock / TimedOut = read_timeout=50ms 到期,正常
+                    if e.kind() != std::io::ErrorKind::WouldBlock
+                        && e.kind() != std::io::ErrorKind::TimedOut
+                    {
+                        log::warn!("UDP traceroute recv thread error: {}", e);
+                        // 防御 spin：未预期错误短暂 sleep
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+        }
+    });
+
+    // ===== 主线程状态 =====
     let mut send_times: Vec<Option<Instant>> = vec![None; (max_hops as usize) + 1];
-    // 每跳的结果（按 hop_number 索引到位置 hop-1）
     let mut results: Vec<FastHop> = (1..=max_hops as u32)
         .map(|n| FastHop {
             hop_number: n,
@@ -83,41 +143,54 @@ fn do_udp_traceroute_blocking(
             rtt_ms: None,
         })
         .collect();
+    let mut found_target_hop: Option<u8> = None;
 
-    // 1) 顺序发出所有 TTL 的 UDP 包
+    // ===== Send 阶段：每 TTL 一个独立 UdpSocket =====
+    // 保留每 TTL 独立 src_port 的设计（每次 OS 分配随机源端口 → 五元组不同 →
+    // ECMP hash 可能不同 → 有机会观察到骨干路径的多 IP 分岔）。
     //
-    // 用标准 UdpSocket 即可：每个 socket 绑定 0.0.0.0:0，设置 ttl，sendto 到
-    // (target, BASE_PORT+ttl)。我们不关心源端口反查（dst_port 已经能反查 TTL）。
-    // 保留 socket 在 vec 中防止过早 drop。
+    // Windows 上此循环整体耗时可能 1000ms+，但因 recv 线程独立运行,
+    // 已到达的 ICMP 会在到达瞬间被打上正确的 recv_time,不会被 send 阻塞污染。
     let mut udp_sockets: Vec<UdpSocket> = Vec::with_capacity(max_hops as usize);
     for ttl in 1..=max_hops {
-        let sock = UdpSocket::bind("0.0.0.0:0")
-            .map_err(|e| AppError::TracerouteError(format!("UDP bind 失败 ttl={}: {}", ttl, e)))?;
-        sock.set_ttl(ttl as u32)
-            .map_err(|e| AppError::TracerouteError(format!("UDP set_ttl({}) 失败: {}", ttl, e)))?;
+        let sock = match UdpSocket::bind("0.0.0.0:0") {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("UDP bind 失败 ttl={}: {}", ttl, e);
+                continue;
+            }
+        };
+        if let Err(e) = sock.set_ttl(ttl as u32) {
+            log::warn!("UDP set_ttl({}) 失败: {}", ttl, e);
+            continue;
+        }
 
         let dst_port = BASE_PORT + ttl as u16;
         let dst: SocketAddr = SocketAddrV4::new(target, dst_port).into();
 
         send_times[ttl as usize] = Some(Instant::now());
-
-        // 一个最小载荷即可（≥1 字节，路由器不需要载荷内容）
         if let Err(e) = sock.send_to(&[0u8; 1], dst) {
             log::warn!("UDP send_to ttl={} dst={} failed: {}", ttl, dst, e);
         }
-
         udp_sockets.push(sock);
-        // 微小间隔避免突发被速率限制
-        std::thread::sleep(Duration::from_millis(2));
+
+        // 顺手消化 channel 里已到达的响应（TTL 小的响应在本次 send 循环里可能就到了）
+        while let Ok(evt) = rx.try_recv() {
+            process_udp_event(
+                evt,
+                &send_times,
+                &mut results,
+                &mut found_target_hop,
+                target,
+                max_hops,
+            );
+        }
     }
 
-    // 2) 在 timeout 窗口内持续接收 ICMP 回复
+    // ===== 等待阶段：继续处理响应直到 deadline 或提前满足 =====
     let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
-    let mut buf = [std::mem::MaybeUninit::new(0u8); 1500];
-    let mut found_target_hop: Option<u8> = None;
-
     while Instant::now() < deadline {
-        // 提前退出：已找到目标跳，且其前面所有跳都有了结果
+        // 提前退出：找到目标跳且其前所有跳都有 IP
         if let Some(target_ttl) = found_target_hop {
             let all_done = (1..=target_ttl).all(|t| results[(t - 1) as usize].ip.is_some());
             if all_done {
@@ -125,106 +198,35 @@ fn do_udp_traceroute_blocking(
             }
         }
 
-        match icmp_socket.recv_from(&mut buf) {
-            Ok((len, src)) => {
-                let data = unsafe {
-                    std::slice::from_raw_parts(buf.as_ptr() as *const u8, len)
-                };
-                let src_addr: SocketAddr = match src.as_socket() {
-                    Some(a) => a,
-                    None => continue,
-                };
-                let src_ip = match src_addr.ip() {
-                    IpAddr::V4(v4) => v4,
-                    _ => continue,
-                };
-
-                // 解析 ICMP 包，提取这是哪个 TTL 的回复以及类型
-                if let Some((reply_type, ttl)) = parse_icmp_for_udp(data, target) {
-                    if ttl == 0 || ttl as usize > results.len() {
-                        continue;
-                    }
-
-                    // 判断这条回复是否来自目标
-                    let from_target = src_ip == target;
-
-                    // 诊断日志：每条 ICMP 回复都打一条，便于排查
-                    log::debug!(
-                        "[udp-trace] icmp recv: type={} src={} reverse_ttl={} from_target={}",
-                        reply_type, src_ip, ttl, from_target
-                    );
-
-                    // 关键修正：UDP traceroute 中，一旦某个 TTL 足够到达目标，
-                    // 比它大的 TTL 包也都会到目标（路径长度固定，TTL 余量更多），
-                    // 目标对它们全部回 ICMP Port Unreachable，src_ip 都是 target。
-                    // 因此 src_ip == target 的回复**不能**直接写入对应 hop —— 它们只能
-                    // 用来确定"最小的目标跳 TTL"。中间跳的 IP 只能来自 type=11
-                    // (Time Exceeded)，src 是中间路由器（!= target）。
-                    if from_target {
-                        // 来自目标的回复（不论 type=3 还是别的）：更新最小目标跳候选，
-                        // 把目标跳那一行的 IP 立刻写为 target（用于提前退出判断）。
-                        let new_target_ttl = match found_target_hop {
-                            Some(prev) => prev.min(ttl),
-                            None => ttl,
-                        };
-
-                        // 防御性清理：如果 new_target_ttl 比当前已写入的某些 hop 小，
-                        // 那些更大 ttl 的 hop 上误填的 target IP 必须清掉
-                        // （走到这里是因为之前可能某些回复先到顺序乱）
-                        for clear_ttl in (new_target_ttl + 1)..=max_hops {
-                            let cidx = (clear_ttl - 1) as usize;
-                            if cidx < results.len() {
-                                if let Some(ref ip) = results[cidx].ip {
-                                    if *ip == target.to_string() {
-                                        results[cidx].ip = None;
-                                        results[cidx].rtt_ms = None;
-                                    }
-                                }
-                            }
-                        }
-
-                        let idx = (new_target_ttl - 1) as usize;
-                        if idx < results.len() {
-                            let send_time = send_times[new_target_ttl as usize];
-                            let rtt_ms = send_time.map(|t| t.elapsed().as_secs_f64() * 1000.0);
-                            results[idx].ip = Some(target.to_string());
-                            results[idx].rtt_ms = rtt_ms;
-                        }
-                        found_target_hop = Some(new_target_ttl);
-                        continue;
-                    }
-
-                    // 其它情况（主要是 type=11 中间跳的 Time Exceeded，
-                    // 或极少数中间路由器返回 type=3 host/net unreachable）：
-                    // 正常填入对应 hop 的 IP。
-                    let idx = (ttl - 1) as usize;
-                    if results[idx].ip.is_some() {
-                        continue; // 已有结果，忽略重复
-                    }
-                    let send_time = send_times[ttl as usize];
-                    let rtt_ms = send_time.map(|t| t.elapsed().as_secs_f64() * 1000.0);
-
-                    results[idx].ip = Some(src_ip.to_string());
-                    results[idx].rtt_ms = rtt_ms;
-                }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let wait = remaining.min(Duration::from_millis(50));
+        match rx.recv_timeout(wait) {
+            Ok(evt) => {
+                process_udp_event(
+                    evt,
+                    &send_times,
+                    &mut results,
+                    &mut found_target_hop,
+                    target,
+                    max_hops,
+                );
             }
-            Err(e) => {
-                if e.kind() != std::io::ErrorKind::WouldBlock
-                    && e.kind() != std::io::ErrorKind::TimedOut
-                {
-                    log::warn!("UDP traceroute icmp recv error: {}", e);
-                    // 防御 spin：未预期的错误（如某些平台上的 WSAEINVAL）也短暂 sleep
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 
-    // 3) 截断后续不必要的跳，并把目标跳的 IP/RTT 填好
+    // ===== 收尾 =====
+    // 通知 recv 线程退出（read_timeout=50ms 决定最长退出等待）
+    stop_flag.store(true, Ordering::Relaxed);
+    let _ = recv_thread.join();
+
+    // 若识别到目标跳,把目标跳 IP 补齐（如果尚未填入）并截断多余跳
     if let Some(target_ttl) = found_target_hop {
         let idx = (target_ttl - 1) as usize;
         if idx < results.len() && results[idx].ip.is_none() {
             let send_time = send_times[target_ttl as usize];
+            // 这里没有对应的 recv_time,fallback 用 elapsed（通常不会走到,前面已经填过了）
             let rtt_ms = send_time.map(|t| t.elapsed().as_secs_f64() * 1000.0);
             results[idx].ip = Some(target.to_string());
             results[idx].rtt_ms = rtt_ms;
@@ -232,10 +234,70 @@ fn do_udp_traceroute_blocking(
         results.truncate(target_ttl as usize);
     }
 
-    // udp_sockets 在此 drop，回收所有 UDP socket
     drop(udp_sockets);
-
     Ok(results)
+}
+
+/// 处理一条 recv 线程发来的 ICMP 事件：更新 results / found_target_hop。
+/// RTT 计算 = evt.recv_time - send_times[ttl]，反映真实往返时间（不含 send 阶段耗时）。
+fn process_udp_event(
+    evt: RecvEvent,
+    send_times: &[Option<Instant>],
+    results: &mut [FastHop],
+    found_target_hop: &mut Option<u8>,
+    target: Ipv4Addr,
+    max_hops: u8,
+) {
+    let ttl = evt.ttl;
+    if ttl == 0 || ttl as usize > results.len() {
+        return;
+    }
+    let from_target = evt.src_ip == target;
+
+    log::debug!(
+        "[udp-trace] icmp recv: type={} src={} reverse_ttl={} from_target={}",
+        evt.icmp_type, evt.src_ip, ttl, from_target
+    );
+
+    if from_target {
+        // 来自目标的回复：仅用于更新最小目标跳候选
+        // 大 TTL 的包也能到目标,src_ip 都是 target,不能直接写入对应 hop 的 IP。
+        let new_target_ttl = match *found_target_hop {
+            Some(prev) => prev.min(ttl),
+            None => ttl,
+        };
+        // 清掉 > new_target_ttl 的位置上误填的 target IP
+        for clear_ttl in (new_target_ttl + 1)..=max_hops {
+            let cidx = (clear_ttl - 1) as usize;
+            if cidx < results.len() {
+                if let Some(ref ip) = results[cidx].ip {
+                    if *ip == target.to_string() {
+                        results[cidx].ip = None;
+                        results[cidx].rtt_ms = None;
+                    }
+                }
+            }
+        }
+        let idx = (new_target_ttl - 1) as usize;
+        if idx < results.len() {
+            let send_time = send_times[new_target_ttl as usize];
+            let rtt_ms = send_time.map(|t| (evt.recv_time - t).as_secs_f64() * 1000.0);
+            results[idx].ip = Some(target.to_string());
+            results[idx].rtt_ms = rtt_ms;
+        }
+        *found_target_hop = Some(new_target_ttl);
+        return;
+    }
+
+    // 中间跳的 Time Exceeded / 少数 Dest Unreachable：填入对应 hop
+    let idx = (ttl - 1) as usize;
+    if results[idx].ip.is_some() {
+        return; // 已有结果,忽略后续重复
+    }
+    let send_time = send_times[ttl as usize];
+    let rtt_ms = send_time.map(|t| (evt.recv_time - t).as_secs_f64() * 1000.0);
+    results[idx].ip = Some(evt.src_ip.to_string());
+    results[idx].rtt_ms = rtt_ms;
 }
 
 /// 解析一个 ICMP 包，提取 (icmp_type, 原始 UDP 包对应的 TTL)。

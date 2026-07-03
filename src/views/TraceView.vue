@@ -9,7 +9,7 @@ import { useContinuousTraceStore } from '@/stores/continuousTraceStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useNpcapStore } from '@/stores'
 import { useToast } from '@/composables/useToast'
-import type { ContinuousTraceHopResult, PathDiscovered } from '@/composables/useContinuousTrace'
+import type { ContinuousTraceHopResult, PathDiscovered, PathUpdate } from '@/composables/useContinuousTrace'
 
 const { t } = useI18n()
 const store = useContinuousTraceStore()
@@ -23,6 +23,8 @@ const pingInterval = ref(2000)
 const maxHops = ref(30)
 const timeoutMs = ref(3000)
 const probeMethod = ref<'icmp' | 'udp' | 'tcp'>('icmp')
+// TCP 探测的目标端口，默认 80（与 PingPlotter 一致），仅 probeMethod='tcp' 时生效
+const tcpPort = ref(80)
 
 // 历史会话抽屉
 const historyOpen = ref(false)
@@ -32,6 +34,24 @@ const inputsDisabled = computed(() => store.isRunning || store.isHistoricalView)
 
 // 选中显示在折线图上的跳号集合
 const selectedHopNumbers = ref<number[]>([])
+
+// 展开显示"每跳 IP 分布"的跳号集合（PingPlotter Pro 风格的展开子行）
+// 只对观察到 ≥2 个 IP 的跳才允许展开
+const expandedHopNumbers = ref<Set<number>>(new Set())
+
+/** 切换某跳的展开/折叠。仅在多 IP 时有效。 */
+function toggleHopExpand(hopNumber: number, hasMultipleIps: boolean, event: MouseEvent) {
+  if (!hasMultipleIps) return
+  event.stopPropagation() // 避免触发 toggleHopSelection
+  const s = expandedHopNumbers.value
+  if (s.has(hopNumber)) {
+    s.delete(hopNumber)
+  } else {
+    s.add(hopNumber)
+  }
+  // 触发响应式
+  expandedHopNumbers.value = new Set(s)
+}
 
 // 路径发现完成后默认选中最后一跳（最终目标）
 watch(
@@ -169,7 +189,14 @@ useContinuousTraceListener(
   (data: PathDiscovered) => {
     console.log('[TraceView] path-discovered received', data.hops.length, 'hops, target=', data.target)
     store.setPath(data)
-    toast.success(`路径发现完成：${data.hops.length} 跳，开始持续监控`)
+    // 显示"实际路径长度"（最后响应跳的编号），而不是原始探测跳数 max_hops
+    // UDP/TCP 追踪目标不响应时 data.hops 长度可能是 30，但真实路径要短得多；
+    // 用 max(hop_number) over 有 IP 的跳，能得到真实的路径长度（含中间超时跳）
+    const responded = data.hops.filter(h => h.ip)
+    const actualHopCount = responded.length > 0
+      ? Math.max(...responded.map(h => h.hop_number))
+      : data.hops.length
+    toast.success(`路径发现完成：${actualHopCount} 跳，开始持续监控`)
   },
   (result: ContinuousTraceHopResult) => {
     store.addHopResult(result)
@@ -180,6 +207,13 @@ useContinuousTraceListener(
   },
   (_target: string) => {
     store.stopMonitoring()
+  },
+  undefined,
+  undefined,
+  // path-update：后端每轮 emit 完整路径快照，前端做增量 merge
+  // 用来补上初始超时后来响应的跳（mtr / PingPlotter 招牌行为）
+  (data: PathUpdate) => {
+    store.mergePath(data)
   }
 )
 
@@ -192,7 +226,7 @@ async function handleStart() {
   const samplesPerWindow = Math.ceil((windowMinutes * 60 * 1000) / pingInterval.value)
   store.setMaxSamples(samplesPerWindow)
 
-  store.startMonitoring(targetInput.value.trim())
+  store.startMonitoring(targetInput.value.trim(), probeMethod.value)
   try {
     await startContinuousTrace(
       targetInput.value.trim(),
@@ -200,7 +234,9 @@ async function handleStart() {
       timeoutMs.value,
       pingInterval.value,
       probeMethod.value,
-      settingsStore.settings.tracePersistEnabled
+      settingsStore.settings.tracePersistEnabled,
+      // 仅 TCP 模式下传端口；其他模式后端会忽略
+      probeMethod.value === 'tcp' ? tcpPort.value : undefined
     )
   } catch (e: any) {
     toast.error(`启动失败: ${typeof e === 'string' ? e : e.message || '未知错误'}`)
@@ -222,25 +258,57 @@ function handleClear() {
 }
 
 // 每跳统计：显示所有跳（包括无响应的），保持序号连续
+// 每行携带 ipBreakdown（多 IP 分组统计）供 UI 展开子行使用
+// 主行显示的 IP 优先取"样本最多的 IP"（PingPlotter 一致），首轮刚发现还没样本时
+// 回退到 hop.ip（最新观察到的 IP）
+//
+// 尾部空跳截断（PingPlotter 一致）：
+// UDP/TCP 追踪时目标常不响应 ICMP Port Unreachable / TCP SYN-ACK，导致
+// fast_udp/tcp 结果里从"实际最后一跳"到 max_hops 都是空的 * * *。
+// 找到最后一个曾经观察到 IP 的跳作为路径终点，之后的空跳不显示。
+// 中间空跳（防火墙屏蔽某个中间路由器）仍保留，方便诊断。
 const hopStats = computed(() => {
   if (store.hops.length === 0) return []
 
-  // 找到最大跳数
-  const maxHop = Math.max(...store.hops.map(h => h.hop_number))
+  // 找到最后一个曾观察到 IP 的跳（作为路径显示终点）
+  let lastResponsiveHop = 0
+  for (const h of store.hops) {
+    if (h.ip && h.hop_number > lastResponsiveHop) {
+      lastResponsiveHop = h.hop_number
+    }
+  }
+
+  // 一个响应都没有：显示全部（让用户看到"完全无响应"）
+  const maxHop = lastResponsiveHop > 0
+    ? lastResponsiveHop
+    : Math.max(...store.hops.map(h => h.hop_number))
 
   // 生成连续的跳列表
   const result = []
   for (let i = 1; i <= maxHop; i++) {
     const hop = store.hops.find(h => h.hop_number === i)
     if (hop && hop.ip) {
-      result.push({ ...hop, stats: store.getHopStats(i) })
+      const ipBreakdown = store.getHopIpBreakdown(i)
+      // ipBreakdown 已按 count 降序排列（see store.getHopIpBreakdown）
+      // 首轮刚发现路径还没样本时 ipBreakdown 为空，回退到 hop.ip
+      const displayIp = ipBreakdown.length > 0 ? ipBreakdown[0].ip : hop.ip
+      result.push({
+        ...hop,
+        // 覆盖主行显示 IP
+        ip: displayIp,
+        stats: store.getHopStats(i),
+        ipBreakdown,
+        hasMultipleIps: ipBreakdown.length >= 2
+      })
     } else {
       // 无响应的跳
       result.push({
         hop_number: i,
         ip: null,
         hostname: null,
-        stats: { avg: 0, min: 0, max: 0, loss: 100, count: 0 }
+        stats: { avg: 0, min: 0, max: 0, loss: 100, count: 0 },
+        ipBreakdown: [],
+        hasMultipleIps: false
       })
     }
   }
@@ -354,6 +422,17 @@ function getLatencyClass(avg: number): string {
             </button>
           </div>
         </div>
+        <!-- TCP 目标端口：仅 probe_method='tcp' 时显示（默认 80，与 PingPlotter 一致） -->
+        <div v-if="probeMethod === 'tcp'" class="config-field">
+          <label class="config-label">{{ t('traceroute.tcpPort') }}</label>
+          <input
+            v-model.number="tcpPort"
+            type="number"
+            class="config-input"
+            min="1" max="65535" step="1"
+            :disabled="inputsDisabled"
+          />
+        </div>
       </div>
       <div class="config-actions">
         <button
@@ -410,31 +489,59 @@ function getLatencyClass(avg: number): string {
           </tr>
         </thead>
         <tbody>
-          <tr
-            v-for="hop in hopStats"
-            :key="hop.hop_number"
-            :class="{
-              'no-response': !hop.ip,
-              'selectable': !!hop.ip,
-              'selected': !!hop.ip && selectedHopNumbers.includes(hop.hop_number)
-            }"
-            @click="toggleHopSelection(hop.hop_number, !!hop.ip, $event)"
-          >
-            <td>
-              <span
-                v-if="hop.ip && selectedHopNumbers.includes(hop.hop_number)"
-                class="hop-color-dot"
-                :style="{ background: colorForHop(hop.hop_number) }"
-              ></span>
-              {{ hop.hop_number }}
-            </td>
-            <td class="mono">{{ hop.ip || '* * *' }}</td>
-            <td :class="getLatencyClass(hop.stats.avg)">{{ hop.stats.avg > 0 ? `${hop.stats.avg.toFixed(1)} ms` : '--' }}</td>
-            <td>{{ hop.stats.min > 0 ? `${hop.stats.min.toFixed(1)} ms` : '--' }}</td>
-            <td>{{ hop.stats.max > 0 ? `${hop.stats.max.toFixed(1)} ms` : '--' }}</td>
-            <td :class="{ 'loss-high': hop.ip && hop.stats.loss > 5 }">{{ hop.ip ? `${hop.stats.loss.toFixed(1)}%` : '--' }}</td>
-            <td class="muted">{{ hop.stats.count || '--' }}</td>
-          </tr>
+          <template v-for="hop in hopStats" :key="hop.hop_number">
+            <tr
+              :class="{
+                'no-response': !hop.ip,
+                'selectable': !!hop.ip,
+                'selected': !!hop.ip && selectedHopNumbers.includes(hop.hop_number)
+              }"
+              @click="toggleHopSelection(hop.hop_number, !!hop.ip, $event)"
+            >
+              <td>
+                <!-- 多 IP 时显示展开/折叠按钮（PingPlotter Pro 风格） -->
+                <button
+                  v-if="hop.hasMultipleIps"
+                  class="expand-btn"
+                  :title="expandedHopNumbers.has(hop.hop_number) ? t('traceroute.collapseIps') : t('traceroute.expandIps', { count: hop.ipBreakdown.length })"
+                  @click="toggleHopExpand(hop.hop_number, hop.hasMultipleIps, $event)"
+                >
+                  {{ expandedHopNumbers.has(hop.hop_number) ? '▼' : '▶' }}
+                </button>
+                <span
+                  v-if="hop.ip && selectedHopNumbers.includes(hop.hop_number)"
+                  class="hop-color-dot"
+                  :style="{ background: colorForHop(hop.hop_number) }"
+                ></span>
+                {{ hop.hop_number }}
+              </td>
+              <td class="mono">
+                {{ hop.ip || '* * *' }}
+                <span v-if="hop.hasMultipleIps" class="ip-count-badge">
+                  +{{ hop.ipBreakdown.length - 1 }}
+                </span>
+              </td>
+              <td :class="getLatencyClass(hop.stats.avg)">{{ hop.stats.avg > 0 ? `${hop.stats.avg.toFixed(1)} ms` : '--' }}</td>
+              <td>{{ hop.stats.min > 0 ? `${hop.stats.min.toFixed(1)} ms` : '--' }}</td>
+              <td>{{ hop.stats.max > 0 ? `${hop.stats.max.toFixed(1)} ms` : '--' }}</td>
+              <td :class="{ 'loss-high': hop.ip && hop.stats.loss > 5 }">{{ hop.ip ? `${hop.stats.loss.toFixed(1)}%` : '--' }}</td>
+              <td class="muted">{{ hop.stats.count || '--' }}</td>
+            </tr>
+            <!-- 展开的 IP 分组子行 -->
+            <tr
+              v-for="ipRow in (expandedHopNumbers.has(hop.hop_number) ? hop.ipBreakdown : [])"
+              :key="`${hop.hop_number}-${ipRow.ip}`"
+              class="ip-subrow"
+            >
+              <td class="subrow-indent">↳</td>
+              <td class="mono subrow-ip">{{ ipRow.ip }}</td>
+              <td :class="getLatencyClass(ipRow.avg)">{{ ipRow.avg > 0 ? `${ipRow.avg.toFixed(1)} ms` : '--' }}</td>
+              <td>{{ ipRow.min > 0 ? `${ipRow.min.toFixed(1)} ms` : '--' }}</td>
+              <td>{{ ipRow.max > 0 ? `${ipRow.max.toFixed(1)} ms` : '--' }}</td>
+              <td :class="{ 'loss-high': ipRow.loss > 5 }">{{ ipRow.loss.toFixed(1) }}%</td>
+              <td class="muted">{{ ipRow.count }}</td>
+            </tr>
+          </template>
         </tbody>
       </table>
     </div>
@@ -832,6 +939,73 @@ function getLatencyClass(avg: number): string {
   border-radius: 50%;
   margin-right: 6px;
   vertical-align: middle;
+}
+
+// 多 IP 展开/折叠按钮
+.expand-btn {
+  display: inline-block;
+  padding: 0 4px;
+  margin-right: 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 10px;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: color 0.15s;
+
+  &:hover {
+    color: var(--accent-color);
+  }
+}
+
+// 多 IP 数量徽章：显示 +N 表示除主 IP 外还有几个
+.ip-count-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  background: var(--accent-color);
+  color: white;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: sans-serif;
+  vertical-align: middle;
+}
+
+// 展开的 IP 分组子行
+.stats-table tr.ip-subrow {
+  background: rgba(0, 0, 0, 0.03);
+
+  td {
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    border-bottom: 1px dashed var(--border-color);
+  }
+
+  &:hover td {
+    background: rgba(0, 0, 0, 0.05);
+  }
+
+  .subrow-indent {
+    text-align: right;
+    padding-right: 8px;
+    color: var(--text-muted);
+  }
+
+  .subrow-ip {
+    color: var(--text-primary);
+  }
+}
+
+// 暗色主题下的子行背景
+[data-theme='dark'] .stats-table tr.ip-subrow {
+  background: rgba(255, 255, 255, 0.03);
+
+  &:hover td {
+    background: rgba(255, 255, 255, 0.05);
+  }
 }
 
 .empty-state {

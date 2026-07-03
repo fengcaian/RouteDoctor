@@ -142,7 +142,9 @@ fn do_tcp_traceroute_blocking(
         }
 
         tcp_sockets.push((ttl, sock, actual_src_port));
-        std::thread::sleep(Duration::from_millis(2));
+        // 见 fast_traceroute.rs 里同样注释：sleep 会导致首跳 RTT 虚高, 尤其
+        // 本例中 TCP socket 创建/bind 开销更大, 30 跳发送时间可能达 80ms+, 首跳测得
+        // ~87ms 而实际网关只有 3ms。去掉 sleep 让 send 阶段最短化。
     }
 
     // 2) 在 timeout 窗口内：

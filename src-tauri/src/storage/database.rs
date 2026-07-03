@@ -6,6 +6,54 @@ use crate::models::ping::PingResult;
 use crate::error::AppResult;
 use crate::storage::paths::resolve_data_dir;
 
+/// 当前的数据库 schema 版本。每次做不兼容 schema 变更时 +1，
+/// 并在 run_schema_migrations 里添加对应的迁移分支。
+const SCHEMA_VERSION: u32 = 2;
+
+/// 增量 schema 迁移：读取 PRAGMA user_version，按版本差异应用迁移。
+/// 保证幂等——每个迁移分支应该能安全地重复执行。
+fn run_schema_migrations(conn: &Connection) -> AppResult<()> {
+    let current: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap_or(0);
+
+    if current >= SCHEMA_VERSION {
+        return Ok(());
+    }
+
+    log::info!("Schema migration: {} → {}", current, SCHEMA_VERSION);
+
+    // v1 → v2：trace_hop_sample 增加 ip 列，用于记录该轮该跳响应的具体 IP。
+    // 目的：支持 mtr/PingPlotter 风格的"每跳多 IP"（ECMP、路径抖动）历史回放。
+    if current < 2 {
+        // 幂等 ADD COLUMN：先检查列是否已存在（用户可能已经通过其它途径改过）
+        let has_ip = column_exists(conn, "trace_hop_sample", "ip")?;
+        if !has_ip {
+            conn.execute("ALTER TABLE trace_hop_sample ADD COLUMN ip TEXT", [])?;
+            log::info!("v1→v2: 已给 trace_hop_sample 添加 ip 列");
+        }
+    }
+
+    // 未来的迁移分支放这里，例如：
+    // if current < 3 { ... }
+
+    // 更新 user_version（不能用 参数绑定，SQLite PRAGMA 限制）
+    conn.execute(&format!("PRAGMA user_version = {}", SCHEMA_VERSION), [])?;
+    Ok(())
+}
+
+/// 检查表是否有某列（用于幂等 ALTER TABLE）
+fn column_exists(conn: &Connection, table: &str, column: &str) -> AppResult<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Database state wrapper
 pub struct DbState(pub Arc<Mutex<Connection>>);
 
@@ -92,10 +140,15 @@ pub fn init_database(app_handle: &tauri::AppHandle) -> AppResult<()> {
             latency_ms REAL,
             is_timeout INTEGER NOT NULL,
             timestamp INTEGER NOT NULL,
+            ip TEXT,
             FOREIGN KEY (session_id) REFERENCES trace_session(id)
         )",
         [],
     )?;
+
+    // Schema 迁移：给老库的 trace_hop_sample 补 ip 列（v1→v2）。
+    // 使用 SQLite 的 PRAGMA user_version 做增量迁移，只在版本落后时执行。
+    run_schema_migrations(&conn)?;
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_trace_session_target ON trace_session(target)",

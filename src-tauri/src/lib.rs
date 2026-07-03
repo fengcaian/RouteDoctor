@@ -27,6 +27,16 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        // 单实例插件必须放在最前，避免其他插件先申请资源后再被中止。
+        // 第二次启动时进入回调：把已有主窗口显示/取消最小化/聚焦，然后当前进程退出。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            log::info!("检测到应用二次启动，激活已有窗口");
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
@@ -61,8 +71,19 @@ pub fn run() {
                 .build()?;
 
             // Build tray icon
+            //
+            // 注意：tauri.conf.json 中不要再配置 `trayIcon` 字段，否则 Tauri
+            // 会在 setup 钩子之前自动创建一个同 id 的"无菜单"托盘，与此处
+            // 创建的带菜单托盘 id 冲突，导致用户右键看不到菜单。
+            // 图标走 bundle.icon 中加载的默认窗口图标。
             let app_handle_for_tray = app.handle().clone();
+            let tray_icon = app
+                .default_window_icon()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("默认窗口图标缺失，无法初始化托盘"))?;
             let _tray = TrayIconBuilder::with_id("main")
+                .icon(tray_icon)
+                .tooltip("RouteDoctor")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| {

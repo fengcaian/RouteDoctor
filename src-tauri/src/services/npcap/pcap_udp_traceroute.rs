@@ -1,4 +1,4 @@
-// 通过 Npcap 实现真正的并行 UDP traceroute（仅 Windows）
+// 通过 Npcap 实现真正的并行 UDP traceroute（仅 Windows）+ 独立 recv 线程
 //
 // 与 services::fast_udp_traceroute 的核心差别：
 // - fast_udp_traceroute 用标准 UdpSocket 发包 + raw ICMP socket 收包
@@ -6,15 +6,17 @@
 // - 本实现用 pcap（Npcap）直接在网卡层抓所有 ICMP，绕过 OS 过滤
 //   → 真正能拿到中间跳路由器的 IP
 //
-// 流程：
-// 1. 列出网卡，挑出"已连接、有 IPv4 地址、不是 loopback"的那张
-// 2. 在该网卡上开 pcap capture（BPF 过滤"icmp 或 udp 来自 target"），把 capture 句柄克隆出来抓 + 发
-// 3. 用标准 UdpSocket 发 30 个 UDP 包（让 OS 帮我们处理路由/MAC 解析）
-//    —— 也可以完全用 pcap 自己造 IP 包注入，但那样要自己解 ARP 等。简单起见用 OS 发。
-// 4. 在 timeout 窗口内 cap.next_packet() 收 ICMP，解析嵌入的原始 UDP dst_port 反查 ttl
-// 5. 同样的"src==target 的 Port Unreachable 只更新最小目标跳"逻辑
+// 关键：send / recv 分离（与 fast_udp_traceroute 相同结构）
+// - 独立 recv 线程：pcap.next_packet 循环，收到 ICMP 包立即 Instant::now() 打时间戳,
+//   解析后通过 mpsc 发给主线程 → 首跳 RTT 不再被 send 阶段的耗时污染
+// - Windows 上"每 TTL 一个 UdpSocket bind"耗时 1000ms+,若同步阻塞收包会导致
+//   首跳 RTT 虚高 ~1000ms（bug 现场,与 fast_udp 完全一致）
+// - 保留了每 TTL 独立 src_port 的语义（能观察到 UDP ECMP 分岔）
 
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pcap::{Capture, Device};
@@ -28,6 +30,13 @@ use crate::services::fast_traceroute::FastHop;
 
 /// 标准 traceroute 起始端口
 const BASE_PORT: u16 = 33434;
+
+/// 一条 ICMP 响应事件：由 recv 线程实时打时间戳,通过 mpsc 发给主线程处理
+struct RecvEvent {
+    recv_time: Instant,
+    src_ip: Ipv4Addr,
+    ttl: u8,
+}
 
 /// 通过 Npcap 实现的并行 UDP traceroute。target 必须是已解析的 IPv4。
 ///
@@ -64,7 +73,7 @@ fn do_pcap_udp_traceroute(
 
     // 2) 打开 capture 句柄
     //    - immediate_mode：立刻把包送上来（不等内核缓冲填满）
-    //    - timeout：read 阻塞最长时间（毫秒）；用 50ms 让循环能定期检查 deadline
+    //    - timeout：read 阻塞最长时间（毫秒）；用 50ms 让 recv 线程能定期检查 stop_flag
     //    - snaplen：1500 足够包住完整以太网帧 + 嵌入 IP + 嵌入 UDP 头
     let mut cap = Capture::from_device(device.clone())
         .map_err(|e| AppError::TracerouteError(format!("pcap from_device 失败: {}", e)))?
@@ -76,16 +85,50 @@ fn do_pcap_udp_traceroute(
         .map_err(|e| AppError::TracerouteError(format!("pcap open 失败（Npcap 是否已启动？）: {}", e)))?;
 
     // BPF 过滤：只关心 ICMP 包（中间跳的 Time Exceeded、目标的 Port Unreachable）
-    // 注意：BPF 用的是网络字节序，pnet 用主机字节序，下面解析时再处理
     if let Err(e) = cap.filter("icmp", true) {
         log::warn!("[pcap-udp] 设置 BPF 过滤失败（{}），将抓全部包并自行过滤", e);
     }
 
-    // 拿网卡的链路类型（决定怎么解析帧头）
     let datalink = cap.get_datalink();
     log::info!("[pcap-udp] 链路类型: {:?}", datalink);
 
-    // 3) 准备结果数组 + 发送时间记录
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let stop_flag_recv = stop_flag.clone();
+    let (tx, rx) = mpsc::channel::<RecvEvent>();
+
+    // ===== 独立 recv 线程 =====
+    // 一开始就在 cap.next_packet 上等 ICMP。收到即用 Instant::now() 打时间戳,
+    // 解析（跳过链路头 + IP + ICMP + 内嵌 IP + 内嵌 UDP）后反查 TTL,通过 mpsc
+    // 发给主线程。目的：send 阶段的耗时不再污染 RTT 计算。
+    let recv_thread = std::thread::spawn(move || {
+        while !stop_flag_recv.load(Ordering::Relaxed) {
+            match cap.next_packet() {
+                Ok(packet) => {
+                    let recv_time = Instant::now();
+                    if let Some((src_ip, ttl)) = parse_icmp_for_udp(packet.data, datalink) {
+                        if tx.send(RecvEvent {
+                            recv_time,
+                            src_ip,
+                            ttl,
+                        }).is_err() {
+                            // 主线程 rx 已关闭
+                            break;
+                        }
+                    }
+                }
+                Err(pcap::Error::TimeoutExpired) => {
+                    // pcap 50ms 内没收到包,正常情况
+                    continue;
+                }
+                Err(e) => {
+                    log::warn!("[pcap-udp] recv thread error: {}", e);
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+    });
+
+    // ===== 主线程状态 =====
     let mut send_times: Vec<Option<Instant>> = vec![None; (max_hops as usize) + 1];
     let mut results: Vec<FastHop> = (1..=max_hops as u32)
         .map(|n| FastHop {
@@ -94,16 +137,24 @@ fn do_pcap_udp_traceroute(
             rtt_ms: None,
         })
         .collect();
+    let mut found_target_hop: Option<u8> = None;
 
-    // 4) 发包：用标准 UdpSocket（让 OS 处理 ARP/路由），TTL=1..max_hops
-    //    pcap 那边会抓到回程 ICMP
-    use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
+    // ===== Send 阶段：每 TTL 独立 UdpSocket =====
+    // 用标准 UdpSocket 发包（让 OS 处理 ARP/路由），pcap 那边抓回程 ICMP。
+    // 每 TTL 独立 socket 保留 UDP ECMP 观察能力（OS 每次分配不同 src_port）。
     let mut udp_sockets: Vec<UdpSocket> = Vec::with_capacity(max_hops as usize);
     for ttl in 1..=max_hops {
-        let sock = UdpSocket::bind("0.0.0.0:0")
-            .map_err(|e| AppError::TracerouteError(format!("UDP bind 失败 ttl={}: {}", ttl, e)))?;
-        sock.set_ttl(ttl as u32)
-            .map_err(|e| AppError::TracerouteError(format!("UDP set_ttl({}) 失败: {}", ttl, e)))?;
+        let sock = match UdpSocket::bind("0.0.0.0:0") {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("[pcap-udp] UDP bind 失败 ttl={}: {}", ttl, e);
+                continue;
+            }
+        };
+        if let Err(e) = sock.set_ttl(ttl as u32) {
+            log::warn!("[pcap-udp] UDP set_ttl({}) 失败: {}", ttl, e);
+            continue;
+        }
 
         let dst_port = BASE_PORT + ttl as u16;
         let dst: SocketAddr = SocketAddrV4::new(target, dst_port).into();
@@ -112,17 +163,24 @@ fn do_pcap_udp_traceroute(
         if let Err(e) = sock.send_to(&[0u8; 1], dst) {
             log::warn!("[pcap-udp] send_to ttl={} 失败: {}", ttl, e);
         }
-
         udp_sockets.push(sock);
-        std::thread::sleep(Duration::from_millis(2));
+
+        // 顺手消化 channel 里已到达的响应
+        while let Ok(evt) = rx.try_recv() {
+            process_udp_event(
+                evt,
+                &send_times,
+                &mut results,
+                &mut found_target_hop,
+                target,
+                max_hops,
+            );
+        }
     }
 
-    // 5) 抓包循环
+    // ===== 等待阶段：继续处理响应直到 deadline 或提前满足 =====
     let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
-    let mut found_target_hop: Option<u8> = None;
-
     while Instant::now() < deadline {
-        // 提前退出：找到目标跳且其前所有跳都有结果
         if let Some(target_ttl) = found_target_hop {
             let all_done = (1..=target_ttl).all(|t| results[(t - 1) as usize].ip.is_some());
             if all_done {
@@ -130,73 +188,88 @@ fn do_pcap_udp_traceroute(
             }
         }
 
-        match cap.next_packet() {
-            Ok(packet) => {
-                // 解析以太网帧 → IPv4 → ICMP →（嵌入的）IPv4 → UDP
-                if let Some((src_ip, ttl)) = parse_icmp_for_udp(packet.data, datalink) {
-                    if ttl == 0 || ttl as usize > results.len() {
-                        continue;
-                    }
-                    let from_target = src_ip == target;
-                    log::debug!(
-                        "[pcap-udp] icmp recv: src={} reverse_ttl={} from_target={}",
-                        src_ip, ttl, from_target
-                    );
-
-                    if from_target {
-                        // 来自目标：仅更新最小目标跳，不写中间跳
-                        let new_target_ttl = match found_target_hop {
-                            Some(prev) => prev.min(ttl),
-                            None => ttl,
-                        };
-                        // 清掉所有 ttl > new_target_ttl 的目标 IP 误填
-                        for clear_ttl in (new_target_ttl + 1)..=max_hops {
-                            let cidx = (clear_ttl - 1) as usize;
-                            if cidx < results.len() {
-                                if let Some(ref ip) = results[cidx].ip {
-                                    if *ip == target.to_string() {
-                                        results[cidx].ip = None;
-                                        results[cidx].rtt_ms = None;
-                                    }
-                                }
-                            }
-                        }
-                        // 把目标跳那一行立即写为 target IP
-                        let idx = (new_target_ttl - 1) as usize;
-                        if idx < results.len() {
-                            let send_time = send_times[new_target_ttl as usize];
-                            let rtt_ms = send_time.map(|t| t.elapsed().as_secs_f64() * 1000.0);
-                            results[idx].ip = Some(target.to_string());
-                            results[idx].rtt_ms = rtt_ms;
-                        }
-                        found_target_hop = Some(new_target_ttl);
-                        continue;
-                    }
-
-                    // 中间跳 Time Exceeded
-                    let idx = (ttl - 1) as usize;
-                    if results[idx].ip.is_some() {
-                        continue;
-                    }
-                    let send_time = send_times[ttl as usize];
-                    let rtt_ms = send_time.map(|t| t.elapsed().as_secs_f64() * 1000.0);
-                    results[idx].ip = Some(src_ip.to_string());
-                    results[idx].rtt_ms = rtt_ms;
-                }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let wait = remaining.min(Duration::from_millis(50));
+        match rx.recv_timeout(wait) {
+            Ok(evt) => {
+                process_udp_event(
+                    evt,
+                    &send_times,
+                    &mut results,
+                    &mut found_target_hop,
+                    target,
+                    max_hops,
+                );
             }
-            Err(pcap::Error::TimeoutExpired) => {
-                // pcap 50ms 内没收到包，正常情况
-                continue;
-            }
-            Err(e) => {
-                log::warn!("[pcap-udp] next_packet 错误: {}", e);
-                std::thread::sleep(Duration::from_millis(50));
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 
+    // ===== 收尾 =====
+    stop_flag.store(true, Ordering::Relaxed);
+    let _ = recv_thread.join();
+
     drop(udp_sockets);
     Ok(results)
+}
+
+/// 处理一条 recv 线程发来的 ICMP 事件。
+/// RTT = evt.recv_time - send_times[ttl]，反映真实往返时间（不含 send 阶段耗时）。
+fn process_udp_event(
+    evt: RecvEvent,
+    send_times: &[Option<Instant>],
+    results: &mut [FastHop],
+    found_target_hop: &mut Option<u8>,
+    target: Ipv4Addr,
+    max_hops: u8,
+) {
+    let ttl = evt.ttl;
+    if ttl == 0 || ttl as usize > results.len() {
+        return;
+    }
+    let from_target = evt.src_ip == target;
+    log::debug!(
+        "[pcap-udp] icmp recv: src={} reverse_ttl={} from_target={}",
+        evt.src_ip, ttl, from_target
+    );
+
+    if from_target {
+        let new_target_ttl = match *found_target_hop {
+            Some(prev) => prev.min(ttl),
+            None => ttl,
+        };
+        // 清掉 > new_target_ttl 的位置上误填的 target IP
+        for clear_ttl in (new_target_ttl + 1)..=max_hops {
+            let cidx = (clear_ttl - 1) as usize;
+            if cidx < results.len() {
+                if let Some(ref ip) = results[cidx].ip {
+                    if *ip == target.to_string() {
+                        results[cidx].ip = None;
+                        results[cidx].rtt_ms = None;
+                    }
+                }
+            }
+        }
+        let idx = (new_target_ttl - 1) as usize;
+        if idx < results.len() {
+            let send_time = send_times[new_target_ttl as usize];
+            let rtt_ms = send_time.map(|t| (evt.recv_time - t).as_secs_f64() * 1000.0);
+            results[idx].ip = Some(target.to_string());
+            results[idx].rtt_ms = rtt_ms;
+        }
+        *found_target_hop = Some(new_target_ttl);
+        return;
+    }
+
+    let idx = (ttl - 1) as usize;
+    if results[idx].ip.is_some() {
+        return;
+    }
+    let send_time = send_times[ttl as usize];
+    let rtt_ms = send_time.map(|t| (evt.recv_time - t).as_secs_f64() * 1000.0);
+    results[idx].ip = Some(evt.src_ip.to_string());
+    results[idx].rtt_ms = rtt_ms;
 }
 
 /// 选择默认发包用的网卡：必须匹配本机外发流量的真实出口 IP，

@@ -1,10 +1,11 @@
 use std::sync::atomic::Ordering;
 use tauri_plugin_autostart::ManagerExt;
 
-/// Atomic flag indicating whether the window should be hidden to the tray
-/// when the user clicks the close button. Default: true (hide).
+/// 标记：点击窗口关闭按钮时是否隐藏到托盘。
+/// 默认 false（直接退出应用）。前端 settings store 在启动时会通过
+/// `set_minimize_to_tray` 把用户的偏好同步过来，覆盖此默认值。
 pub static MINIMIZE_TO_TRAY: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(true);
+    std::sync::atomic::AtomicBool::new(false);
 
 #[tauri::command]
 pub fn set_minimize_to_tray(enabled: bool) {

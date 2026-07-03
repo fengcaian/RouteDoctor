@@ -10,6 +10,16 @@
 // 不需要 SDK。
 
 fn main() {
+    // 图标 / bundle 元数据变更时强制重新链接：
+    // tauri-build 默认不会监听 icons 目录，导致 `tauri icon` 更新图标后 rustc
+    // 仍然复用旧的 exe（PE 资源里嵌的还是旧图标）。这里补齐 rerun-if-changed。
+    println!("cargo:rerun-if-changed=tauri.conf.json");
+    println!("cargo:rerun-if-changed=icons/icon.ico");
+    println!("cargo:rerun-if-changed=icons/icon.png");
+    println!("cargo:rerun-if-changed=icons/32x32.png");
+    println!("cargo:rerun-if-changed=icons/128x128.png");
+    println!("cargo:rerun-if-changed=icons/128x128@2x.png");
+
     #[cfg(windows)]
     {
         ensure_npcap_sdk_available();

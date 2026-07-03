@@ -7,6 +7,7 @@ use crate::error::AppResult;
 /// 启动持续路径监控
 /// 先跑一次 Traceroute 发现路径，然后对每一跳持续 Ping
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn start_continuous_trace(
     app_handle: tauri::AppHandle,
     target: String,
@@ -15,6 +16,7 @@ pub async fn start_continuous_trace(
     ping_interval_ms: u32,
     probe_method: Option<String>,
     persist: Option<bool>,
+    tcp_port: Option<u16>,
 ) -> AppResult<()> {
     continuous_trace::start_continuous_trace(
         app_handle,
@@ -24,6 +26,7 @@ pub async fn start_continuous_trace(
         ping_interval_ms,
         probe_method.unwrap_or_else(|| "icmp".to_string()),
         persist.unwrap_or(true),
+        tcp_port,
     ).await
 }
 

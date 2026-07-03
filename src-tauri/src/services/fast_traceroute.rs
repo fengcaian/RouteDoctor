@@ -135,8 +135,9 @@ fn do_traceroute_blocking(
         if let Err(e) = socket.send_to(&packet, &target_addr.into()) {
             log::warn!("send_to ttl={} failed: {}", ttl, e);
         }
-        // 微小间隔，避免对端速率限制
-        std::thread::sleep(Duration::from_millis(2));
+        // 之前每跳 sleep(2ms) 是为了避免"突发被 rate-limit"，但 30 跳 * 2ms = 60ms
+        // 会导致首跳响应在 OS buffer 里排队 60ms 后才被处理，RTT 观察值虚高。
+        // 现代路由器普遍接受 30 包突发，去掉 sleep 让 send 阶段尽可能短。
     }
 
     // 2) 接收循环：在 timeout 窗口内持续接收
